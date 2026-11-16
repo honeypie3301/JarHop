@@ -34,3 +34,10 @@ test('accepts only the pinned original trio and rejects older targets',()=>{
   assert.throws(()=>validate(inputs.slice(1),route),/one original/);
   assert.throws(()=>validate([{...inputs[0],hash:'different'},...inputs.slice(1)],route),/Patch conflict/);
 });
+
+test('local prepared mode accepts the original Core and Flight pair without Laser Eyes',()=>{
+  const inputs=Object.entries(profiles).filter(([id])=>id!=='lasereyes').map(([id,[version,hash]])=>({id,version,hash,minecraft:'[1.21.1,1.21.2)'}));
+  assert.doesNotThrow(()=>validate(inputs,route,true));
+  assert.throws(()=>validate(inputs,route),/the three mods/);
+  assert.throws(()=>validate(inputs.slice(0,1),route,true),/Core and Flight/);
+});

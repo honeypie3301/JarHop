@@ -2,7 +2,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
 
-import {limit, profiles, route} from './route.mjs';
+import {limit, profiles, route, includesMinecraft, supportsPreparedSelection} from './route.mjs';
 
 const names={viltrumitecore:'Viltrumite Core',viltrumiteflight:'Viltrumite Flight',lasereyes:'Laser Eyes'};
 const local=location.hostname==='127.0.0.1' && location.port==='4789';
@@ -51,20 +51,22 @@ function App() {
   const dynamic=mode==='upload';
   const [target,setTarget]=useState('26.1.2');
   const matched=new Set(files.map(file=>file.mod).filter(Boolean));
-  const missing=Object.keys(profiles).filter(id=>!matched.has(id));
+  const missing=(local?['viltrumitecore','viltrumiteflight']:Object.keys(profiles)).filter(id=>!matched.has(id));
+  const prepared=local&&target==='26.1.2'&&supportsPreparedSelection(files.map(file=>file.mod),true);
+  const incompatible=file=>dynamic&&file.role==='dependency'&&!file.checking&&!file.issue&&!includesMinecraft(file.minecraft,'26.1.2');
   const custom=localProfiles.find(profile=>profile.target===target &&
     files.length===profile.inputs.length && profile.inputs.every(input=>files.some(file=>file.hash===input.sha256)));
   const targets=[...new Set(['26.1.2','26.2','26.3',...localProfiles.map(profile=>profile.target)])];
   const checking=files.some(file=>file.checking);
   const blocked=busy || job?.status==='running' || (cloud && cloud.status!=='completed');
-  const ready=!checking && (dynamic ? target==='26.1.2' && files.length>0 && files[0].role==='source' && files.every(file=>!file.issue&&(file.mod||file.inspection?.loader==='NeoForge')) : (Boolean(custom) || (target==='26.1.2' && !missing.length && files.length===3)));
+  const ready=!checking && (dynamic ? target==='26.1.2' && files.length>0 && files[0].role==='source' && files.every(file=>!file.issue&&!incompatible(file)&&(file.mod||file.inspection?.loader==='NeoForge')) : (Boolean(custom) || (target==='26.1.2' && supportsPreparedSelection(files.map(file=>file.mod),local))));
   const hint=blocked?'A build is already running.':checking?'Checking JARs…':
-    dynamic?(target!=='26.1.2'?'Automatic upload migration is available for 26.1.2. Select Prepared project to use a local profile for '+target+'.':ready?'Ready to generate a project from the first JAR.':'Choose the NeoForge 1.21.1 source mod and add its dependencies if needed.'):
+    dynamic?(target!=='26.1.2'?'Automatic upload migration is available for 26.1.2. Select Prepared project to use a local profile for '+target+'.':files.some(incompatible)?'A dependency targets an older or unsupported Minecraft version. Use its 26.1.2 build or switch to the prepared project for the original Viltrumite JARs.':ready?'Ready to generate a project from the first JAR.':'Choose the NeoForge 1.21.1 source mod and add its dependencies if needed.'):
     custom?'Ready to build '+custom.title+'.':
     target!=='26.1.2'?'NeoForge '+target+' needs a migration profile before JarHop can build for it.':
     files.some(file=>!file.mod)?'This selection has no build profile for NeoForge '+target+'.':
     missing.length?'Add '+missing.map(id=>names[id]).join(', ')+'.':
-    files.length!==3?'Keep one original JAR per mod.':'All three original JARs are ready.';
+    !supportsPreparedSelection(files.map(file=>file.mod),local)?'Keep one original JAR per mod.':'The selected original JARs are ready.';
   function addFiles(list,role='source') {
     setError('');
     const added=Array.from(list, file=>({file,role,key:crypto.randomUUID(),checking:true}));
@@ -89,7 +91,7 @@ function App() {
         }
       }
     } catch(error) { issue=error.message || 'Could not read this file. Remove it and try again.'; }
-    setFiles(current=>current.map(file=>file.key===item.key?{...file,mod,issue,inspection,hash,checking:false}:file));
+    setFiles(current=>current.map(file=>file.key===item.key?{...file,mod,issue,inspection,hash,minecraft:mod?'[1.21.1,1.21.2)':inspection?.minecraft,checking:false}:file));
   }
   async function submit(event) {
     event.preventDefault();
@@ -144,7 +146,7 @@ function App() {
           <p className="hint">Choose NeoForge JARs compatible with Minecraft 26.1.2.</p>
         </div>}
         {files.length>0&&<ul className="files">{files.map(item=><li key={item.key}>
-          <div><strong>{item.file.name}</strong>{dynamic&&<small>{item.role==='dependency'?'Dependency':'Source mod'}</small>}<small className={item.issue?'invalid':''}>{item.issue||(item.checking?'Checking…':item.mod?names[item.mod]+' '+profiles[item.mod][0]:item.inspection?item.inspection.loader+' · '+item.inspection.classes+' classes'+(localProfiles.some(profile=>profile.inputs.some(input=>input.sha256===item.hash))?' · Local profile available':''):'Build profile unavailable')}</small></div>
+          <div><strong>{item.file.name}</strong>{dynamic&&<small>{item.role==='dependency'?'Dependency':'Source mod'}</small>}<small className={item.issue||incompatible(item)?'invalid':''}>{item.issue||(incompatible(item)?'Requires Minecraft '+(item.minecraft||'unknown')+'. Upload the 26.1.2 dependency JAR.':null)||(item.checking?'Checking…':item.mod?names[item.mod]+' '+profiles[item.mod][0]:item.inspection?item.inspection.loader+' · '+item.inspection.classes+' classes'+(localProfiles.some(profile=>profile.inputs.some(input=>input.sha256===item.hash))?' · Local profile available':''):'Build profile unavailable')}</small></div>
           <button className="remove" type="button" aria-label={'Remove '+item.file.name} onClick={()=>setFiles(current=>current.filter(file=>file.key!==item.key))}>×</button>
         </li>)}</ul>}
         <div className="build-row">
@@ -156,6 +158,7 @@ function App() {
           <button className="primary" aria-describedby="build-status" disabled={!ready||Boolean(blocked)}>Build port <span aria-hidden="true">↗</span></button>
         </div>
         <p className="hint" id="build-status" role="status">{hint}</p>
+        {dynamic&&prepared&&<button className="secondary" type="button" onClick={()=>setMode('prepared')}>Use prepared Viltrumite port</button>}
       </form>:<section className="panel">
         <h2>Open JarHop</h2>
         <p>Run <code>start.bat</code>, then open <a href="http://127.0.0.1:4789">the local app</a>.</p>

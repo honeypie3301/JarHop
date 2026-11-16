@@ -4,6 +4,7 @@ import {mkdir,readFile,readdir,rename,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {includesMinecraft} from './route.mjs';
 import {dynamicRoute,runDynamic} from './dynamic.mjs';
 import {readProfiles,validateProfileInputs} from './local-profiles.mjs';
 import {inspect,inspectArchive,route,runPort,streamFile,validate} from './engine.mjs';
@@ -108,12 +109,16 @@ const server=createServer(async(req,res)=>{
         const profile=selected===route||dynamic?null:(await localProfiles()).find(item=>item.id===selected);
         if(!dynamic&&selected!==route&&!profile) throw Error('Unknown build profile.');
         const uploads=form.getAll('jar');
-        if((dynamic?(uploads.length<1):uploads.length!==(profile?.inputs.length||3)) || uploads.some(file=>typeof file==='string'||!file.size)) throw Error('Select the original JARs required by the selected build mode.');
+        if((dynamic?(uploads.length<1):(profile?uploads.length!==profile.inputs.length:uploads.length<2||uploads.length>3)) || uploads.some(file=>typeof file==='string'||!file.size)) throw Error('Select the original JARs required by the selected build mode.');
         const bytes=await Promise.all(uploads.map(async file=>Buffer.from(await file.arrayBuffer())));
         const details=await Promise.all(bytes.map(inspect));
         if(profile) validateProfileInputs(details,profile);
-        else if(!dynamic) validate(details,selected);
+        else if(!dynamic) validate(details,selected,true);
         if(dynamic && (new Set(details.map(item=>item.id)).size!==details.length || details.some(item=>!/^[a-z][a-z0-9_]{1,63}$/.test(item.id||'')))) throw Error('Expected distinct NeoForge mod IDs.');
+        if(dynamic) {
+          const incompatible=details.slice(1).filter(item=>!includesMinecraft(item.minecraft,'26.1.2'));
+          if(incompatible.length) throw Error('Dependencies must already support Minecraft 26.1.2: '+incompatible.map(item=>item.id+' ('+(item.minecraft||'no declared version')+')').join(', ')+'. For the original Viltrumite JARs, use Prepared project.');
+        }
         const id=randomUUID(),directory=path.join(state,id);
         await mkdir(directory);
         const files=await Promise.all(bytes.map(async (data,i)=>{
@@ -129,7 +134,7 @@ const server=createServer(async(req,res)=>{
         await save(job);
         started=true;
         let lastSavedAt=Date.now();
-        (dynamic?runDynamic:runPort)({files,target:route,directory,tools:config,profile,signal:job.controller.signal,update(stage,line){
+        (dynamic?runDynamic:runPort)({files,target:route,directory,tools:config,profile,local:true,signal:job.controller.signal,update(stage,line){
           if(stage) job.stage=stage;
           if(line) {
             job.logs=(job.logs+line).slice(-24000);

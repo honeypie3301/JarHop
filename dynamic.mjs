@@ -9,26 +9,8 @@ import {migrateGeneratedApis} from './generated-api-migrations.mjs';
 export const dynamicRoute='upload-neoforge-26.1.2';
 const target='26.1.2', neo='26.1.2.95';
 const lower=range=>range?.match(/^(?:\[|\()?\s*(\d+(?:\.\d+)+)/)?.[1];
-function compareVersion(left,right) {
-  const a=left.split('.').map(Number),b=right.split('.').map(Number);
-  for(let i=0;i<Math.max(a.length,b.length);i++) {
-    const delta=(a[i]||0)-(b[i]||0);
-    if(delta) return Math.sign(delta);
-  }
-  return 0;
-}
-
-export function includesMinecraft(range,version) {
-  if(!range) return false;
-  const text=range.trim();
-  if(text===version||text==='['+version+']') return true;
-  const intervals=text.match(/(?:\[|\()\s*(\d+(?:\.\d+)*)?\s*,\s*(\d+(?:\.\d+)*)?\s*(?:\]|\))/g)||[];
-  return intervals.some(interval=>{
-    const [min,max]=interval.slice(1,-1).split(',').map(value=>value.trim());
-    const from=min?compareVersion(version,min):1,to=max?compareVersion(version,max):-1;
-    return (from>0||from===0&&interval.startsWith('['))&&(to<0||to===0&&interval.endsWith(']'));
-  });
-}
+import {includesMinecraft} from './route.mjs';
+export {includesMinecraft};
 
 const toml='META-INF/neoforge.mods.toml';
 

@@ -52,3 +52,33 @@ Refresh JarHop, select the original JAR and the profile's target version, then c
 Local upload builds boot a fresh NeoForge dedicated server and launch a disposable test client. JarHop closes the client after it reaches the title screen. A build with both startup checks passed is a **Candidate** until a behavior suite passes.
 
 Register a trusted Node.js test script in `tools.local.json` under `verificationSuites`, keyed by `<original SHA-256>:26.1.2`. JarHop calls the script with two arguments, a request JSON path and a result JSON path. The request contains both JAR paths and hashes, the source and target versions, the NeoForge version and target dependencies. The script runs the original and the candidate and writes `originalSha256`, `candidateSha256`, and `cases`. Each case needs a descriptive `name`, a `category` of `gameplay`, `save-reload`, `multiplayer`, or `visuals`, and `original` and `candidate` outcomes. Each category must be covered and every outcome must be `passed` for the exact JAR to be labeled **Verified**. The manifest records these scenarios. The original mod runtime and any original-version dependencies that the suite needs must be supplied by the suite.
+
+## Refresh an existing port
+
+Use a refresh when the upstream mod releases a new build for the same source Minecraft version. Keep the previous upstream source snapshot, the new upstream source snapshot and the working port. If you start from JARs, decompile both releases with the same tools and mappings before comparing their trees. Matching directory roots can cover Java sources, resources or both. The working port keeps its Gradle configuration and dependency declarations.
+
+Run `refresh.bat C:\path\to\refresh.json`. Git must be on PATH. The output directory must be new, with an existing parent directory. Example configuration:
+
+```json
+{
+  "template": "C:/Mods/working-port",
+  "output": "C:/Mods/refresh-1.2",
+  "roots": [
+    {
+      "baseline": "C:/Mods/previous-upstream/src/main",
+      "upstream": "C:/Mods/new-upstream/src/main",
+      "portPath": "src/main"
+    }
+  ],
+  "build": {
+    "javaHome": "C:/Java/jdk-25",
+    "offline": false
+  }
+}
+```
+
+For a multi-module port, add one root per source tree and set each portPath relative to the working Gradle project. The optional build step compiles the merged copy. Use build.gradleHome if the project uses a separate Gradle cache. Unresolved conflicts stop the build with exit code 2. Inspect refresh-report.json, the merged project and incoming files. A file move is represented by its old and new paths, so review moves that overlap port changes.
+
+After you test the refreshed build, keep the new upstream snapshot as the baseline for the next release and the tested project as its working port. Promote them together. The refresh command does not replace either input. Gradle success does not verify gameplay or client/server startup. Run the refreshed binaries through your normal verification scenarios before promoting them.
+
+As an alternative to source directories, a root may declare baselineJar and upstreamJar absolute paths, its portPath, and kind set to java or resources. Both JARs must be releases of the same NeoForge 1.21.1 mod. For JAR roots, set jarTools.java, jarTools.art, jarTools.mappings, jarTools.minecraft and jarTools.vineflower to the same tool paths used by the upload runner. Use two roots to refresh Java and resources together. JarHop remaps and decompiles both releases with the same tools for comparison.

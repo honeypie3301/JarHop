@@ -5,7 +5,7 @@ import {spawn} from 'node:child_process';
 import path from 'node:path';
 import JSZip from 'jszip';
 
-import {limit, route, profiles} from './route.mjs';
+import {limit, route, profiles, supportsPreparedSelection} from './route.mjs';
 import {validateProfileInputs} from './local-profiles.mjs';
 export {limit, route, profiles};
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -42,9 +42,14 @@ export async function inspectArchive(bytes) {
   const zip=await checkZip(bytes);
   const descriptors={'META-INF/neoforge.mods.toml':'NeoForge','META-INF/mods.toml':'Forge','fabric.mod.json':'Fabric','quilt.mod.json':'Quilt'};
   const metadata=Object.keys(descriptors).find(name=>zip.file(name));
-  return {loader:descriptors[metadata]||'Unknown',classes:Object.values(zip.files).filter(file=>!file.dir&&file.name.endsWith('.class')).length,sha256:digest(bytes)};
+  const minecraft=metadata==='META-INF/neoforge.mods.toml'?minecraftRange(await zip.file(metadata).async('string')):undefined;
+  return {minecraft,loader:descriptors[metadata]||'Unknown',classes:Object.values(zip.files).filter(file=>!file.dir&&file.name.endsWith('.class')).length,sha256:digest(bytes)};
 }
 
+function minecraftRange(metadata) {
+  const dependency=metadata.split(/\[\[dependencies[^\n]*\]\]/).find(section=>commonFields(section,'modId')[0]==='minecraft');
+  return dependency && commonFields(dependency,'versionRange')[0];
+}
 export async function inspect(bytes) {
   const zip = await checkZip(bytes);
   const entry = zip.file('META-INF/neoforge.mods.toml');
@@ -60,11 +65,9 @@ export async function inspect(bytes) {
     assets:files.filter(isAsset),zip};
 }
 
-export function validate(inputs,target) {
+export function validate(inputs,target,local=false) {
   if (target!==route) throw Error('Unsupported source and target version pair.');
-  if (inputs.length!==3 || new Set(inputs.map(input=>input.id)).size!==3) throw Error('Select one original JAR for each of the three mods.');
-  const missing = Object.keys(profiles).filter(id=>!inputs.some(input=>input.id===id));
-  if (missing.length) throw Error('Missing mod dependencies: '+missing.join(', '));
+  if (!supportsPreparedSelection(inputs.map(input=>input.id),local)) throw Error(local?'Select the original Core and Flight JARs once each. Laser Eyes is optional.':'Select one original JAR for each of the three mods.');
   for (const input of inputs) {
     const [version,hash] = profiles[input.id];
     if (input.version!==version || !input.minecraft?.includes('1.21.1') || input.hash!==hash) throw Error('Patch conflict: '+input.id+' does not match the supported original binary.');
@@ -89,12 +92,12 @@ export function command(executable,args,{cwd,env=process.env,signal,log=()=>{}}=
   });
 }
 
-export async function runPort({files,target,directory,tools,signal,update,profile}) {
+export async function runPort({files,target,directory,tools,signal,update,profile,local=false}) {
   const inputs=[];
   update('Inspecting inputs');
   for(const file of files) inputs.push(await inspect(await readFile(file)));
   if(profile) validateProfileInputs(inputs,profile);
-  else validate(inputs,target);
+  else validate(inputs,target,local);
   for(const key of (profile?['java','template']:['java','art','mappings','minecraft','vineflower','template'])) {
     if (!tools[key]) throw Error('Missing prerequisite: '+key+'. See README.md.');
   }

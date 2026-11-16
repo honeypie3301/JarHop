@@ -16,3 +16,11 @@ Use **Prepared project** for the bundled Viltrumite build or an optional custom 
 ## Setup and deployment
 
 The [setup guide](docs/SETUP.md) covers Windows prerequisites, local tool paths, and the optional GitHub Actions runner. Use [build.bat](build.bat) to rebuild JarHop and run its tests.
+
+## Update a port after an upstream release
+
+Use [refresh.bat](refresh.bat) to merge a new upstream source snapshot into a copy of a working port and optionally compile it. [Refresh setup](docs/SETUP.md#refresh-an-existing-port)
+
+### Viltrumite Core and Flight
+
+For the known original 1.21.1 releases, use **Prepared project** and select Core and Flight. Laser Eyes is optional for local prepared builds. In **From uploaded JAR**, the dependency picker takes libraries already built for 26.1.2. The original 1.21.1 Flight JAR belongs in the prepared workflow.
