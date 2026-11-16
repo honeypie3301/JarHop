@@ -1,0 +1,59 @@
+name: Port Minecraft mods
+run-name: JarHop ${{ inputs.operator }} ${{ inputs.job }}
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        required: true
+        type: string
+      operator:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  port:
+    if: github.event.repository.private
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Stage the pinned worker image
+        env:
+          IMAGE: ${{ vars.JARHOP_WORKER_IMAGE }}
+        run: |
+          [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]
+          docker pull "$IMAGE"
+      - name: Download private input JARs
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          OPERATOR: ${{ inputs.operator }}
+          JOB: ${{ inputs.job }}
+        run: node cloud-inputs.mjs download "$OPERATOR" "$JOB"
+      - name: Build in an offline container
+        env:
+          IMAGE: ${{ vars.JARHOP_WORKER_IMAGE }}
+        run: |
+          mkdir result
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --cpus 4 --memory 8g \
+            --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp:exec,size=6g \
+            -v "$PWD:/app:ro" -v "$PWD/result:/app/result:rw" -w /app \
+            "$IMAGE" node worker.mjs submitted/0.jar submitted/1.jar submitted/2.jar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarhop-candidate
+          path: result/exports/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Delete private input JARs
+        if: always()
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          OPERATOR: ${{ inputs.operator }}
+          JOB: ${{ inputs.job }}
+        run: node cloud-inputs.mjs delete "$OPERATOR" "$JOB"

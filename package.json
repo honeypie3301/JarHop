@@ -1,0 +1,8 @@
+{
+  "name": "jarhop",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "scripts": {"build:static": "vite build --base=./", "build": "npm run build:static", "test": "node --test", "start": "node server.mjs"},
+  "dependencies": {"jszip":"3.10.1","react":"19.2.0","react-dom":"19.2.0","vite":"7.2.2","@vercel/blob":"2.3.0"}
+}
