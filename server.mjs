@@ -4,6 +4,7 @@ import {mkdir,readFile,readdir,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {dynamicRoute,runDynamic} from './dynamic.mjs';
 import {readProfiles,validateProfileInputs} from './local-profiles.mjs';
 import {inspect,inspectArchive,limit,route,runPort,streamFile,validate} from './engine.mjs';
 
@@ -50,7 +51,7 @@ async function tools() {
   };
 }
 const json=(res,status,value)=>res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify(value));
-async function payload(req,maxSize=limit*3+65536) {
+async function payload(req,maxSize=limit*6+65536) {
   let size=0;
   const chunks=[];
   for await(const chunk of req) {
@@ -91,14 +92,16 @@ const server=createServer(async(req,res)=>{
       try {
         const form=await payload(req);
         const selected=form.get('route');
-        const profile=selected===route?null:(await localProfiles()).find(item=>item.id===selected);
-        if(selected!==route&&!profile) throw Error('Unknown build profile.');
+        const dynamic=selected===dynamicRoute;
+        const profile=selected===route||dynamic?null:(await localProfiles()).find(item=>item.id===selected);
+        if(!dynamic&&selected!==route&&!profile) throw Error('Unknown build profile.');
         const uploads=form.getAll('jar');
-        if(uploads.length!==(profile?.inputs.length||3) || uploads.some(file=>typeof file==='string'||file.size>limit)) throw Error('Select the original JARs required by the profile, at most 24 MiB each.');
+        if((dynamic?(uploads.length<1||uploads.length>6):uploads.length!==(profile?.inputs.length||3)) || uploads.some(file=>typeof file==='string'||file.size>limit)) throw Error('Select the original JARs required by the profile, at most 24 MiB each.');
         const bytes=await Promise.all(uploads.map(async file=>Buffer.from(await file.arrayBuffer())));
         const details=await Promise.all(bytes.map(inspect));
         if(profile) validateProfileInputs(details,profile);
-        else validate(details,selected);
+        else if(!dynamic) validate(details,selected);
+        if(dynamic && (new Set(details.map(item=>item.id)).size!==details.length || details.some(item=>!/^[a-z][a-z0-9_]{1,63}$/.test(item.id||'')))) throw Error('Expected distinct NeoForge mod IDs.');
         const id=randomUUID(),directory=path.join(state,id);
         await mkdir(directory);
         const files=await Promise.all(bytes.map(async (data,i)=>{
@@ -113,14 +116,14 @@ const server=createServer(async(req,res)=>{
         jobs.set(id,job);
         await save(job);
         started=true;
-        runPort({files,target:route,directory,tools:config,profile,signal:job.controller.signal,update(stage,line){
+        (dynamic?runDynamic:runPort)({files,target:route,directory,tools:config,profile,signal:job.controller.signal,update(stage,line){
           if(stage) job.stage=stage;
           if(line) job.logs=(job.logs+line).slice(-24000);
         }}).then(result=>{
           job.result=result;job.status=result.status;
         }).catch(error=>{
           job.error=error.message; job.status=job.controller.signal.aborted?'cancelled':'failed';
-        }).finally(async()=>{active=null;await save(job);}).catch(console.error);
+        }).finally(async()=>{active=null;job.project=existsSync(path.join(job.directory,'migration-project.zip'));await save(job);}).catch(console.error);
         return json(res,202,summarize(job));
       } finally { if(!started) active=null; }
     }
@@ -130,6 +133,10 @@ const server=createServer(async(req,res)=>{
       if(!job) return json(res,404,{error:'Unknown job.'});
       if(req.method==='POST' && match[2]==='cancel') {
         job.controller?.abort(Error('Cancelled'));return json(res,200,summarize(job));
+      }
+      if(req.method==='GET' && job.project && ['migration-project.zip','migration.log'].includes(match[2])) {
+        res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="'+match[2]+'"'});
+        return streamFile(path.join(job.directory,match[2])).pipe(res);
       }
       if(req.method==='GET' && !match[2]) return json(res,200,summarize(job));
       if(req.method==='GET' && job.status==='candidate' && ['manifest.json','jarhop-candidate.zip',...job.result.outputs.map(item=>item.filename)].includes(match[2])) {

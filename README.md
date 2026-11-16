@@ -4,16 +4,14 @@ JarHop is a local-first Windows app for porting Minecraft Java mods. Import the 
 
 ## Get started
 
-1. Double-click [start.bat](start.bat). JarHop opens in your browser at `http://127.0.0.1:4789`.
-2. Select the original NeoForge 1.21.1 JARs for **Viltrumite Core 1.12.1**, **Viltrumite Flight 1.6.9**, and **Laser Eyes 1.3.3**.
-3. Choose **26.1.2** and click **Build port**.
-4. Download the build from the results panel. Use [stop.bat](stop.bat) when you want to shut down JarHop.
+1. Start JarHop with [start.bat](start.bat).
+2. Leave **From uploaded JAR** selected. Add a NeoForge 1.21.1 mod first, followed by any required dependency JARs that declare 26.1.2 support.
+3. Select **26.1.2** and click **Build port**. JarHop remaps and decompiles the upload, reconstructs a Gradle project, and tries to build it against NeoForge 26.1.2.
+4. Download the editable project and migration log if the build needs work. A successful build adds a candidate JAR and manifest.
 
-Local builds keep your files on your PC. The app saves each job's logs, editable project, and exports inside `.jarhop`. If a build fails, open **Build log** to see which step failed.
+The upload path updates Minecraft and NeoForge metadata and renames Minecraft ResourceLocation type references to Identifier. Game API changes may need edits to the generated Java and resources. Logic and visuals require in-game checks.
 
-## Supported ports
-
-The local runner can inspect NeoForge, Forge, Fabric and Quilt JARs. The bundled profile is the original Viltrumite trio on **NeoForge 1.21.1 → 26.1.2**. Local profiles can build other mods and newer versions from a prepared Gradle migration project. See [Add a local build profile](docs/SETUP.md#add-a-local-build-profile). It remaps and decompiles the original JARs for inspection, then builds from the existing port source matched to those binaries. Exports are marked **Candidate** while full in-game behavior checks are pending.
+Use **Prepared project** for the bundled Viltrumite build or an optional custom build profile. Online builds still use the prepared path.
 
 ## Setup and deployment
 

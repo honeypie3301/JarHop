@@ -34,6 +34,8 @@ function App() {
   },[cloud?.id,cloud?.status]);
   const picker=useRef(null);
   const [dragging,setDragging]=useState(false);
+  const [mode,setMode]=useState(local?'upload':'prepared');
+  const dynamic=mode==='upload';
   const [target,setTarget]=useState('26.1.2');
   const matched=new Set(files.map(file=>file.mod).filter(Boolean));
   const missing=Object.keys(profiles).filter(id=>!matched.has(id));
@@ -42,8 +44,9 @@ function App() {
   const targets=[...new Set(['26.1.2','26.2',...localProfiles.map(profile=>profile.target)])];
   const checking=files.some(file=>file.checking);
   const blocked=busy || job?.status==='running' || (cloud && cloud.status!=='completed');
-  const ready=!checking && (Boolean(custom) || (target==='26.1.2' && !missing.length && files.length===3));
+  const ready=!checking && (dynamic ? target==='26.1.2' && files.length>0 && files.length<=6 && files.every(file=>!file.issue&&(file.mod||file.inspection?.loader==='NeoForge')) : (Boolean(custom) || (target==='26.1.2' && !missing.length && files.length===3)));
   const hint=blocked?'A build is already running.':checking?'Checking JARs…':
+    dynamic?(target!=='26.1.2'?'Upload builds currently target 26.1.2.':ready?'Ready to generate a project from the first JAR.':'Add the NeoForge 1.21.1 mod first, followed by any 26.1.2 dependency JARs (up to six files).'):
     custom?'Ready to build '+custom.title+'.':
     target!=='26.1.2'?'NeoForge '+target+' needs a migration profile before JarHop can build for it.':
     files.some(file=>!file.mod)?'This selection has no build profile for NeoForge '+target+'.':
@@ -89,7 +92,7 @@ function App() {
         return;
       }
       const data=new FormData();
-      data.set('route',custom?.id||route);
+      data.set('route',dynamic?'upload-neoforge-26.1.2':custom?.id||route);
       for(const {file} of files) data.append('jar',file);
       setJob(await request('/api/local',{method:'POST',body:data}));
     } catch(e) {setError(e.message);}
@@ -104,10 +107,14 @@ function App() {
     <main className="shell">
       <div className="intro">
         <h1>Port Minecraft mods.</h1>
-        <p>Inspect a mod JAR and check whether JarHop has a migration profile for your target.</p>
+        <p>Generate a NeoForge project directly from your mod JAR.</p>
       </div>
       {canBuild?<form className="panel" onSubmit={submit}>
-        <div className="panel-head"><h2>Original JARs</h2><span className="mono">{files.length} selected</span></div>
+                {local&&<fieldset className="targets"><legend className="mono">BUILD MODE</legend>
+          <button type="button" aria-pressed={dynamic} onClick={()=>setMode('upload')}>From uploaded JAR</button>
+          <button type="button" aria-pressed={!dynamic} onClick={()=>setMode('prepared')}>Prepared project</button>
+        </fieldset>}
+        <div className="panel-head"><h2>Mod JARs</h2><span className="mono">{files.length} selected</span></div>
         <input hidden ref={picker} type="file" accept=".jar" multiple onChange={e=>{addFiles(e.target.files);e.target.value='';}}/>
         <button className={'drop'+(dragging?' dragging':'')} type="button" onClick={()=>picker.current.click()}
           onDragOver={e=>{e.preventDefault();setDragging(true);}} onDragLeave={()=>setDragging(false)}
@@ -117,7 +124,7 @@ function App() {
           <span>Minecraft mod JARs · Up to 24 MiB each</span>
         </button>
         {files.length>0&&<ul className="files">{files.map(item=><li key={item.key}>
-          <div><strong>{item.file.name}</strong><small className={item.issue?'invalid':''}>{item.issue||(item.checking?'Checking…':item.mod?names[item.mod]+' '+profiles[item.mod][0]:item.inspection?item.inspection.loader+' · '+item.inspection.classes+' classes'+(localProfiles.some(profile=>profile.inputs.some(input=>input.sha256===item.hash))?' · Local profile available':' · Build profile unavailable'):'Build profile unavailable')}</small></div>
+          <div><strong>{item.file.name}</strong><small className={item.issue?'invalid':''}>{item.issue||(item.checking?'Checking…':item.mod?names[item.mod]+' '+profiles[item.mod][0]:item.inspection?item.inspection.loader+' · '+item.inspection.classes+' classes'+(localProfiles.some(profile=>profile.inputs.some(input=>input.sha256===item.hash))?' · Local profile available':''):'Build profile unavailable')}</small></div>
           <button className="remove" type="button" aria-label={'Remove '+item.file.name} onClick={()=>setFiles(current=>current.filter(file=>file.key!==item.key))}>×</button>
         </li>)}</ul>}
         <div className="build-row">
@@ -144,6 +151,7 @@ function App() {
         {job.result&&<><p>Candidate build. Logic and visual parity checks are pending. {job.result.outputs.reduce((n,o)=>n+(o.changedAssets?.length||0),0)} resource paths differ from the inputs. See the manifest for details.</p><ul className="downloads">
           {['jarhop-candidate.zip',...job.result.outputs.map(o=>o.filename),'manifest.json'].map(name=><li key={name}><a href={'/api/local/'+job.id+'/'+name}>{name}<span aria-hidden="true">↓</span></a></li>)}
         </ul></>}
+        {job.project&&<p><a href={'/api/local/'+job.id+'/migration-project.zip'}>Download editable project</a> · <a href={'/api/local/'+job.id+'/migration.log'}>Full migration log</a></p>}
         <details key={job.id} open={job.status==='running'||undefined}><summary>Build log</summary><pre>{job.logs}</pre></details>
       </section>}
     </main>
