@@ -13,19 +13,21 @@ const commonFields = (text,key) => [...text.matchAll(new RegExp('^\\s*'+key+'\\s
 const isAsset = name => /^(assets|data)\//.test(name);
 
 async function checkZip(bytes) {
-  if (!bytes.length || bytes.length > limit) throw Error('JAR exceeds the 24 MiB limit or is empty.');
+  if (!bytes.length) throw Error('JAR is empty.');
   // Bound the expansion before JSZip decompresses any entry.
   const end = bytes.lastIndexOf(Buffer.from([80,75,5,6]));
   if (end < 0 || end + 22 > bytes.length || end + 22 + bytes.readUInt16LE(end+20) !== bytes.length ||
       bytes.readUInt16LE(end+4) || bytes.readUInt16LE(end+6)) throw Error('Invalid ZIP end record.');
   const count = bytes.readUInt16LE(end+10);
   let offset = bytes.readUInt32LE(end+16), total = 0;
+  const availableMemory = process.availableMemory();
   if (count > 24000 || offset + bytes.readUInt32LE(end+12) !== end) throw Error('Unsupported ZIP directory.');
   const names = new Set();
   for (let i=0;i<count;i++) {
     if (offset+46>end || bytes.readUInt32LE(offset)!==0x02014b50) throw Error('Invalid ZIP directory.');
     total += bytes.readUInt32LE(offset+24);
-    if (total > 128*1024*1024 || bytes.readUInt16LE(offset+8)&1) throw Error('Unsupported ZIP expansion or encrypted entry.');
+    if (availableMemory>0 && total>availableMemory/2) throw Error('Not enough memory to safely expand this JAR.');
+    if (bytes.readUInt16LE(offset+8)&1) throw Error('Encrypted ZIP entries are unsupported.');
     const size = bytes.readUInt16LE(offset+28);
     const name = bytes.toString('utf8',offset+46,offset+46+size);
     if (!name || names.has(name) || name.includes('\\') || /^[/]|^[A-Za-z]:/.test(name) || name.split('/').includes('..')) throw Error('Unsafe or duplicate ZIP entry.');

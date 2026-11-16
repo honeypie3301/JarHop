@@ -2,10 +2,32 @@ import path from 'node:path';
 import {cp,mkdir,readFile,readdir,writeFile} from 'node:fs/promises';
 import JSZip from 'jszip';
 import {command,inspect} from './engine.mjs';
+import {verifyServer} from './server-verification.mjs';
 
 export const dynamicRoute='upload-neoforge-26.1.2';
 const target='26.1.2', neo='26.1.2.95';
 const lower=range=>range?.match(/^(?:\[|\()?\s*(\d+(?:\.\d+)+)/)?.[1];
+function compareVersion(left,right) {
+  const a=left.split('.').map(Number),b=right.split('.').map(Number);
+  for(let i=0;i<Math.max(a.length,b.length);i++) {
+    const delta=(a[i]||0)-(b[i]||0);
+    if(delta) return Math.sign(delta);
+  }
+  return 0;
+}
+
+export function includesMinecraft(range,version) {
+  if(!range) return false;
+  const text=range.trim();
+  if(text===version||text==='['+version+']') return true;
+  const intervals=text.match(/(?:\[|\()\s*(\d+(?:\.\d+)*)?\s*,\s*(\d+(?:\.\d+)*)?\s*(?:\]|\))/g)||[];
+  return intervals.some(interval=>{
+    const [min,max]=interval.slice(1,-1).split(',').map(value=>value.trim());
+    const from=min?compareVersion(version,min):1,to=max?compareVersion(version,max):-1;
+    return (from>0||from===0&&interval.startsWith('['))&&(to<0||to===0&&interval.endsWith(']'));
+  });
+}
+
 const toml='META-INF/neoforge.mods.toml';
 
 async function write(root,name,bytes) {
@@ -14,13 +36,27 @@ async function write(root,name,bytes) {
   await mkdir(path.dirname(filename),{recursive:true});
   await writeFile(filename,bytes);
 }
+const effectNames={MOVEMENT_SPEED:'SPEED',JUMP:'JUMP_BOOST',CONFUSION:'NAUSEA',DAMAGE_RESISTANCE:'RESISTANCE'};
 export function migrateJava(source) {
-  const tokens=/"{3}[\s\S]*?"{3}|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\bnet\.minecraft\.resources\.ResourceLocation\b|\bResourceLocation\b/g;
+  const tokens=/"{3}[\s\S]*?"{3}|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\bnet\.minecraft\.resources\.ResourceLocation\b|\bResourceLocation\b|\bnet\.minecraft\.world\.entity\.vehicle\.MinecartTNT\b|\b(?:net\.minecraft\.world\.effect\.)?MobEffects\.(?:MOVEMENT_SPEED|JUMP|CONFUSION|DAMAGE_RESISTANCE)\b/g;
   const hasImport=/^\s*import\s+net\.minecraft\.resources\.ResourceLocation\s*;/m.test(source);
-  return source.replace(tokens,token=>{
+  const importsEffects=/^\s*import\s+net\.minecraft\.world\.effect\.MobEffects\s*;/m.test(source);
+  let migrated=source.replace(tokens,token=>{
+    if(token==='net.minecraft.world.entity.vehicle.MinecartTNT') return 'net.minecraft.world.entity.vehicle.minecart.MinecartTNT';
+    const effect=token.match(/^(net\.minecraft\.world\.effect\.)?MobEffects\.(\w+)$/);
+    if(effect&&(effect[1]||importsEffects)) return (effect[1]||'')+'MobEffects.'+effectNames[effect[2]];
     if(token==='net.minecraft.resources.ResourceLocation') return 'net.minecraft.resources.Identifier';
     return hasImport&&token==='ResourceLocation'?'Identifier':token;
   });
+  if(!/^\s*import\s+net\.minecraft\.world\.effect\.MobEffect\s*;/m.test(migrated) ||
+    !/\bextends\s+MobEffect\b/.test(migrated) || /\bjarhopServerLevel\b/.test(migrated)) return migrated;
+  const tick=/^([ \t]*(?:public|protected) boolean applyEffectTick\()LivingEntity\s+(\w+),\s*int\s+(\w+)\)/m;
+  const match=tick.exec(migrated);
+  if(!match) return migrated;
+  const [,prefix,entity,amplifier]=match;
+  migrated=migrated.replace(tick,()=>prefix+'net.minecraft.server.level.ServerLevel jarhopServerLevel, LivingEntity '+entity+', int '+amplifier+')');
+  const superCall=new RegExp('^([ \\t]*return super\\.applyEffectTick\\()'+entity+',\\s*'+amplifier+'\\);','m');
+  return migrated.replace(superCall,(_,start)=>start+'jarhopServerLevel, '+entity+', '+amplifier+');');
 }
 
 async function archiveProject(project,directory) {
@@ -41,7 +77,8 @@ export async function runDynamic({files,directory,tools,signal,update}) {
   const inputs=await Promise.all(files.map(async file=>inspect(await readFile(file))));
   const [input,...dependencies]=inputs;
   if(!input || lower(input.minecraft)!=='1.21.1') throw Error('Select the NeoForge 1.21.1 source mod first.');
-  if(dependencies.some(dep=>lower(dep.minecraft)!==target)) throw Error('Additional JARs must declare NeoForge Minecraft '+target+' compatibility.');
+  const incompatible=dependencies.filter(dep=>!includesMinecraft(dep.minecraft,target));
+  if(incompatible.length) throw Error('Dependency JARs do not declare Minecraft '+target+' compatibility: '+incompatible.map(dep=>dep.id+' ('+(dep.minecraft||'no Minecraft range')+')').join(', ')+'.');
   if(inputs.some(mod=>!/^[a-z][a-z0-9_]{1,63}$/.test(mod.id||'')) || new Set(inputs.map(mod=>mod.id)).size!==inputs.length) throw Error('Expected distinct NeoForge mod IDs.');
   for(const key of ['java','art','mappings','minecraft','vineflower','template']) if(!tools[key]) throw Error('Missing tool: '+key);
   const project=path.join(directory,'project');
@@ -89,7 +126,14 @@ tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
     const missing=[...new Set(needed)].filter(id=>!dependencies.some(dep=>dep.id===id));
     if(missing.length) throw Error('Missing target-version dependency JARs: '+missing.join(', ')+'.');
     update('Compiling generated sources');
-    await run(['-classpath',path.join(project,'gradle/wrapper/gradle-wrapper.jar'),'org.gradle.wrapper.GradleWrapperMain',...(tools.offline?['--offline']:[]),'--no-daemon','--console=plain','build'],project);
+    try { await run(['-classpath',path.join(project,'gradle/wrapper/gradle-wrapper.jar'),'org.gradle.wrapper.GradleWrapperMain',...(tools.offline?['--offline']:[]),'--no-daemon','--console=plain','build'],project); }
+    catch(error) {
+      if(signal?.aborted) throw error;
+      const first=log.join('').split(/\r?\n/).find(line=>/\.java:\d+: error:/.test(line));
+      if(!first) throw error;
+      const diagnostic=first.trim().replace(/^.*[\\/]([^\\/]+\.java:\d+: error:)/,'$1');
+      throw Error('Generated sources failed to compile against NeoForge '+target+'. '+diagnostic+' See the full migration log.',{cause:error});
+    }
     const filename=input.id+'-neoforge-'+target+'.jar';
     const bytes=await readFile(path.join(project,'build/libs',input.id+'.jar'));
     const built=await inspect(bytes);
@@ -100,8 +144,12 @@ tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
       const after=await built.zip.file(name)?.async('nodebuffer');
       if(!before||!after||!before.equals(after)) changedAssets.push(name);
     }
+    update('Verifying packaged JAR on a clean NeoForge server');
+    const runtimeMods=[{filename,bytes}];
+    for(const [i,dep] of dependencies.entries()) runtimeMods.push({filename:dep.id+'.jar',bytes:await readFile(files[i+1])});
+    await verifyServer({project,directory,id:input.id,neo,mods:runtimeMods,tools,signal,log:chunk=>update(null,chunk)});
     const result={status:'candidate',target,inputs:inputs.map(({id,hash})=>({id,hash})),
-      outputs:[{filename,hash:built.hash,changedAssets}],rules:['ResourceLocation → Identifier'],tests:{archive:'passed',compile:'passed',runtime:'pending',behaviorParity:'pending'}};
+      outputs:[{filename,hash:built.hash,changedAssets}],rules:['ResourceLocation → Identifier','MobEffects constant names','MinecartTNT package','MobEffect server-level tick signature'],tests:{archive:'passed',compile:'passed',serverStartup:'passed',clientStartup:'pending',behaviorParity:'pending'}};
     const report=JSON.stringify(result,null,2);
     const zip=new JSZip();
     zip.file(filename,bytes);zip.file('manifest.json',report);

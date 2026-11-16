@@ -16,6 +16,7 @@ async function request(url,options) {
 }
 function App() {
   const [files,setFiles]=useState([]),[job,setJob]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+  const [runnerOffline,setRunnerOffline]=useState(false), [clock,setClock]=useState(Date.now());
   const [localProfiles,setLocalProfiles]=useState([]);
   const [account,setAccount]=useState(null),[cloud,setCloud]=useState(null);
   useEffect(()=>{
@@ -24,7 +25,19 @@ function App() {
   },[]);
   useEffect(()=>{
     if(job?.status!=='running') return;
-    const timer=setInterval(()=>request('/api/local/'+job.id).then(setJob).catch(e=>setError(e.message)),1200);
+    let pending=false;
+    const timer=setInterval(async()=>{
+      setClock(Date.now());
+      if(pending) return;
+      pending=true;
+      try {
+        const current=await request('/api/local/'+job.id,{signal:AbortSignal.timeout(5000)});
+        setJob(current);
+        setRunnerOffline(false);
+      } catch {
+        setRunnerOffline(true);
+      } finally { pending=false; }
+    },1200);
     return ()=>clearInterval(timer);
   },[job?.id,job?.status]);
   useEffect(()=>{
@@ -32,7 +45,7 @@ function App() {
     const timer=setInterval(()=>request('/api/online?action=status&id='+cloud.id).then(value=>setCloud({...value,id:cloud.id})).catch(e=>setError(e.message)),3500);
     return ()=>clearInterval(timer);
   },[cloud?.id,cloud?.status]);
-  const picker=useRef(null);
+  const picker=useRef(null), dependencyPicker=useRef(null);
   const [dragging,setDragging]=useState(false);
   const [mode,setMode]=useState(local?'upload':'prepared');
   const dynamic=mode==='upload';
@@ -44,25 +57,27 @@ function App() {
   const targets=[...new Set(['26.1.2','26.2',...localProfiles.map(profile=>profile.target)])];
   const checking=files.some(file=>file.checking);
   const blocked=busy || job?.status==='running' || (cloud && cloud.status!=='completed');
-  const ready=!checking && (dynamic ? target==='26.1.2' && files.length>0 && files.length<=6 && files.every(file=>!file.issue&&(file.mod||file.inspection?.loader==='NeoForge')) : (Boolean(custom) || (target==='26.1.2' && !missing.length && files.length===3)));
+  const ready=!checking && (dynamic ? target==='26.1.2' && files.length>0 && files[0].role==='source' && files.every(file=>!file.issue&&(file.mod||file.inspection?.loader==='NeoForge')) : (Boolean(custom) || (target==='26.1.2' && !missing.length && files.length===3)));
   const hint=blocked?'A build is already running.':checking?'Checking JARs…':
-    dynamic?(target!=='26.1.2'?'Upload builds currently target 26.1.2.':ready?'Ready to generate a project from the first JAR.':'Add the NeoForge 1.21.1 mod first, followed by any 26.1.2 dependency JARs (up to six files).'):
+    dynamic?(target!=='26.1.2'?'Upload builds currently target 26.1.2.':ready?'Ready to generate a project from the first JAR.':'Choose the NeoForge 1.21.1 source mod and add its dependencies if needed.'):
     custom?'Ready to build '+custom.title+'.':
     target!=='26.1.2'?'NeoForge '+target+' needs a migration profile before JarHop can build for it.':
     files.some(file=>!file.mod)?'This selection has no build profile for NeoForge '+target+'.':
     missing.length?'Add '+missing.map(id=>names[id]).join(', ')+'.':
     files.length!==3?'Keep one original JAR per mod.':'All three original JARs are ready.';
-  function addFiles(list) {
+  function addFiles(list,role='source') {
     setError('');
-    const added=Array.from(list, file=>({file,key:crypto.randomUUID(),checking:true}));
-    setFiles(current=>[...current,...added]);
+    const added=Array.from(list, file=>({file,role,key:crypto.randomUUID(),checking:true}));
+    if(dynamic&&role==='source') added.splice(1);
+    setFiles(current=>dynamic&&role==='source'?[...added,...current.filter(item=>item.role==='dependency')]:[...current,...added]);
     for(const item of added) checkFile(item);
   }
   async function checkFile(item) {
     let issue,mod,inspection,hash;
     try {
       if(!item.file.name.toLowerCase().endsWith('.jar')) issue='Choose a .jar file.';
-      else if(!item.file.size || item.file.size>limit) issue='JAR must be between 1 byte and 24 MiB.';
+      else if(!item.file.size) issue='JAR is empty.';
+      else if(remote&&item.file.size>limit) issue='Hosted uploads support up to 24 MiB per JAR.';
       else {
         const bytes=await crypto.subtle.digest('SHA-256',await item.file.arrayBuffer());
         hash=Array.from(new Uint8Array(bytes),byte=>byte.toString(16).padStart(2,'0')).join('');
@@ -115,16 +130,21 @@ function App() {
           <button type="button" aria-pressed={!dynamic} onClick={()=>setMode('prepared')}>Prepared project</button>
         </fieldset>}
         <div className="panel-head"><h2>Mod JARs</h2><span className="mono">{files.length} selected</span></div>
-        <input hidden ref={picker} type="file" accept=".jar" multiple onChange={e=>{addFiles(e.target.files);e.target.value='';}}/>
+        <input hidden ref={picker} type="file" accept=".jar" multiple={!dynamic} onChange={e=>{addFiles(e.target.files);e.target.value='';}}/>
         <button className={'drop'+(dragging?' dragging':'')} type="button" onClick={()=>picker.current.click()}
           onDragOver={e=>{e.preventDefault();setDragging(true);}} onDragLeave={()=>setDragging(false)}
           onDrop={e=>{e.preventDefault();setDragging(false);addFiles(e.dataTransfer.files);}}>
           <span className="upload" aria-hidden="true">↑</span>
-          <strong>Drop JARs here or browse</strong>
-          <span>Minecraft mod JARs · Up to 24 MiB each</span>
+          <strong>{dynamic?'Drop the source mod JAR here or browse':'Drop JARs here or browse'}</strong>
+          <span>{dynamic?'NeoForge 1.21.1 source mod':'Original mod JARs'}</span>
         </button>
+        {dynamic&&<div className="dependency-picker">
+          <input hidden ref={dependencyPicker} type="file" accept=".jar" multiple onChange={e=>{addFiles(e.target.files,'dependency');e.target.value='';}}/>
+          <button className="secondary" type="button" onClick={()=>dependencyPicker.current.click()}>Add dependency JARs</button>
+          <p className="hint">Choose NeoForge JARs compatible with Minecraft 26.1.2.</p>
+        </div>}
         {files.length>0&&<ul className="files">{files.map(item=><li key={item.key}>
-          <div><strong>{item.file.name}</strong><small className={item.issue?'invalid':''}>{item.issue||(item.checking?'Checking…':item.mod?names[item.mod]+' '+profiles[item.mod][0]:item.inspection?item.inspection.loader+' · '+item.inspection.classes+' classes'+(localProfiles.some(profile=>profile.inputs.some(input=>input.sha256===item.hash))?' · Local profile available':''):'Build profile unavailable')}</small></div>
+          <div><strong>{item.file.name}</strong>{dynamic&&<small>{item.role==='dependency'?'Dependency':'Source mod'}</small>}<small className={item.issue?'invalid':''}>{item.issue||(item.checking?'Checking…':item.mod?names[item.mod]+' '+profiles[item.mod][0]:item.inspection?item.inspection.loader+' · '+item.inspection.classes+' classes'+(localProfiles.some(profile=>profile.inputs.some(input=>input.sha256===item.hash))?' · Local profile available':''):'Build profile unavailable')}</small></div>
           <button className="remove" type="button" aria-label={'Remove '+item.file.name} onClick={()=>setFiles(current=>current.filter(file=>file.key!==item.key))}>×</button>
         </li>)}</ul>}
         <div className="build-row">
@@ -144,14 +164,18 @@ function App() {
       {cloud&&<p className="panel">GitHub Actions · {cloud.conclusion||cloud.status} {cloud.url&&<a href={cloud.url}>Run log and downloads ↗</a>}</p>}
       {error&&<p className="panel invalid" role="alert">{error}</p>}
       {job&&<section className="panel results">
-        <div className="panel-head"><h2>{job.result?'Build exports':job.stage}</h2><span className="mono">{job.status.toUpperCase()}</span></div>
+        <div className="panel-head"><h2>{job.result?'Build exports':job.stage}</h2><span className="mono">{runnerOffline&&job.status==='running'?'RUNNER OFFLINE':job.status.toUpperCase()}</span></div>
         {job.inputs?.length>0&&<p className="job-inputs">{job.inputs.map(input=>names[input.id]||input.id).join(' · ')}</p>}
         {job.error&&<p className="invalid" role="alert">{job.error}</p>}
-        {job.status==='running'&&<button className="secondary" onClick={()=>request('/api/local/'+job.id+'/cancel',{method:'POST'}).catch(e=>setError(e.message))}>Cancel build</button>}
-        {job.result&&<><p>Candidate build. Logic and visual parity checks are pending. {job.result.outputs.reduce((n,o)=>n+(o.changedAssets?.length||0),0)} resource paths differ from the inputs. See the manifest for details.</p><ul className="downloads">
+        {runnerOffline&&job.status==='running'&&<p className="invalid" role="status">Connection to the local runner was lost. Start JarHop again to recover the recorded job status.</p>}
+        {!runnerOffline&&job.status==='running'&&job.lastOutputAt&&clock-job.lastOutputAt>=15000&&
+          <p className="hint" role="status">Runner connected. No build output for {Math.floor((clock-job.lastOutputAt)/1000)} seconds.</p>}
+        {job.status==='running'&&<button className="secondary" disabled={runnerOffline} onClick={()=>request('/api/local/'+job.id+'/cancel',{method:'POST'}).catch(e=>setError(e.message))}>Cancel build</button>}
+        {job.result&&<><p>{job.result.tests?.serverStartup==='passed'?'Packaged JAR passed server startup. Client and gameplay checks are pending.':'Candidate build. Runtime checks are pending.'} {job.result.outputs.reduce((n,o)=>n+(o.changedAssets?.length||0),0)} resource paths differ from the inputs. See the manifest for details.</p><ul className="downloads">
           {['jarhop-candidate.zip',...job.result.outputs.map(o=>o.filename),'manifest.json'].map(name=><li key={name}><a href={'/api/local/'+job.id+'/'+name}>{name}<span aria-hidden="true">↓</span></a></li>)}
         </ul></>}
         {job.project&&<p><a href={'/api/local/'+job.id+'/migration-project.zip'}>Download editable project</a> · <a href={'/api/local/'+job.id+'/migration.log'}>Full migration log</a></p>}
+        {job.serverVerificationLog&&<p><a href={'/api/local/'+job.id+'/server-verification.log'}>Server verification log</a></p>}
         <details key={job.id} open={job.status==='running'||undefined}><summary>Build log</summary><pre>{job.logs}</pre></details>
       </section>}
     </main>

@@ -1,18 +1,19 @@
 import {createServer} from 'node:http';
 import {existsSync} from 'node:fs';
-import {mkdir,readFile,readdir,writeFile} from 'node:fs/promises';
+import {mkdir,readFile,readdir,rename,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {dynamicRoute,runDynamic} from './dynamic.mjs';
 import {readProfiles,validateProfileInputs} from './local-profiles.mjs';
-import {inspect,inspectArchive,limit,route,runPort,streamFile,validate} from './engine.mjs';
+import {inspect,inspectArchive,route,runPort,streamFile,validate} from './engine.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const state=path.join(root,'.jarhop');
 const port=4789;
 const host='127.0.0.1:'+port;
 const jobs=new Map();
+const saveQueues=new WeakMap();
 async function localProfiles() {
   const value=await readFile(path.join(root,'port-profiles.local.json'),'utf8').catch(error=>{
     if(error.code==='ENOENT') return '[]';
@@ -51,12 +52,9 @@ async function tools() {
   };
 }
 const json=(res,status,value)=>res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify(value));
-async function payload(req,maxSize=limit*6+65536) {
-  let size=0;
+async function payload(req) {
   const chunks=[];
   for await(const chunk of req) {
-    size+=chunk.length;
-    if(size>maxSize) throw Error('Input limit exceeded.');
     chunks.push(chunk);
   }
   return new Response(Buffer.concat(chunks),{headers:{'Content-Type':req.headers['content-type']}}).formData();
@@ -69,10 +67,24 @@ await mkdir(state,{recursive:true});
 for(const id of await readdir(state)) {
   const directory=path.join(state,id);
   const saved=await readFile(path.join(directory,'job.json'),'utf8').then(JSON.parse).catch(()=>null);
-  if(saved) jobs.set(id,{...saved,status:saved.status==='running'?'interrupted':saved.status,directory});
+  if(!saved) continue;
+  const job={...saved,directory};
+  if(job.status==='running') {
+    job.status='interrupted';
+    job.error='The local runner stopped before this build finished. Start a new build to retry.';
+    await save(job);
+  }
+  jobs.set(id,job);
 }
 async function save(job) {
-  await writeFile(path.join(job.directory,'job.json'),JSON.stringify(summarize(job)));
+  const snapshot=JSON.stringify(summarize(job));
+  const filename=path.join(job.directory,'job.json');
+  const pending=(saveQueues.get(job)||Promise.resolve()).catch(()=>{}).then(async()=>{
+    await writeFile(filename+'.tmp',snapshot);
+    await rename(filename+'.tmp',filename);
+  });
+  saveQueues.set(job,pending);
+  await pending;
 }
 const server=createServer(async(req,res)=>{
   try {
@@ -80,9 +92,9 @@ const server=createServer(async(req,res)=>{
     const url=new URL(req.url,'http://'+host);
     if(req.method==='GET' && url.pathname==='/api/local') return json(res,200,{route,profiles:(await localProfiles()).map(({id,title,target,inputs})=>({id,title,target,inputs})),jobs:[...jobs.values()].reverse().map(summarize)});
     if(req.method==='POST' && url.pathname==='/api/local/inspect') {
-      const form=await payload(req,limit+65536);
+      const form=await payload(req);
       const jar=form.get('jar');
-      if(!jar || typeof jar==='string' || jar.size>limit) throw Error('Choose a JAR up to 24 MiB.');
+      if(!jar || typeof jar==='string' || !jar.size) throw Error('Choose a nonempty JAR.');
       return json(res,200,await inspectArchive(Buffer.from(await jar.arrayBuffer())));
     }
     if(req.method==='POST' && url.pathname==='/api/local') {
@@ -96,7 +108,7 @@ const server=createServer(async(req,res)=>{
         const profile=selected===route||dynamic?null:(await localProfiles()).find(item=>item.id===selected);
         if(!dynamic&&selected!==route&&!profile) throw Error('Unknown build profile.');
         const uploads=form.getAll('jar');
-        if((dynamic?(uploads.length<1||uploads.length>6):uploads.length!==(profile?.inputs.length||3)) || uploads.some(file=>typeof file==='string'||file.size>limit)) throw Error('Select the original JARs required by the profile, at most 24 MiB each.');
+        if((dynamic?(uploads.length<1):uploads.length!==(profile?.inputs.length||3)) || uploads.some(file=>typeof file==='string'||!file.size)) throw Error('Select the original JARs required by the selected build mode.');
         const bytes=await Promise.all(uploads.map(async file=>Buffer.from(await file.arrayBuffer())));
         const details=await Promise.all(bytes.map(inspect));
         if(profile) validateProfileInputs(details,profile);
@@ -109,21 +121,29 @@ const server=createServer(async(req,res)=>{
           await writeFile(filename,data);
           return filename;
         }));
-        const job={id,directory,status:'running',stage:'Queued',logs:'',controller:new AbortController(),
+        const job={id,directory,status:'running',stage:'Queued',logs:'',startedAt:Date.now(),lastOutputAt:null,controller:new AbortController(),
           inputs:details.map(({id,version,minecraft,dependencies})=>({id,version,minecraft,dependencies}))};
         const config=await tools();
         if(profile) config.template=profile.template;
         jobs.set(id,job);
         await save(job);
         started=true;
+        let lastSavedAt=Date.now();
         (dynamic?runDynamic:runPort)({files,target:route,directory,tools:config,profile,signal:job.controller.signal,update(stage,line){
           if(stage) job.stage=stage;
-          if(line) job.logs=(job.logs+line).slice(-24000);
+          if(line) {
+            job.logs=(job.logs+line).slice(-24000);
+            job.lastOutputAt=Date.now();
+          }
+          if(stage||Date.now()-lastSavedAt>=3000) {
+            lastSavedAt=Date.now();
+            save(job).catch(console.error);
+          }
         }}).then(result=>{
           job.result=result;job.status=result.status;
         }).catch(error=>{
           job.error=error.message; job.status=job.controller.signal.aborted?'cancelled':'failed';
-        }).finally(async()=>{active=null;job.project=existsSync(path.join(job.directory,'migration-project.zip'));await save(job);}).catch(console.error);
+        }).finally(async()=>{active=null;job.project=existsSync(path.join(job.directory,'migration-project.zip'));job.serverVerificationLog=existsSync(path.join(job.directory,'server-verification.log'));await save(job);}).catch(console.error);
         return json(res,202,summarize(job));
       } finally { if(!started) active=null; }
     }
@@ -134,7 +154,7 @@ const server=createServer(async(req,res)=>{
       if(req.method==='POST' && match[2]==='cancel') {
         job.controller?.abort(Error('Cancelled'));return json(res,200,summarize(job));
       }
-      if(req.method==='GET' && job.project && ['migration-project.zip','migration.log'].includes(match[2])) {
+      if(req.method==='GET' && (job.project&&['migration-project.zip','migration.log'].includes(match[2]) || job.serverVerificationLog&&match[2]==='server-verification.log')) {
         res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="'+match[2]+'"'});
         return streamFile(path.join(job.directory,match[2])).pipe(res);
       }

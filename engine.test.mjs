@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import JSZip from 'jszip';
-import {inspect,profiles,route,validate,limit} from './engine.mjs';
+import {inspect,profiles,route,validate} from './engine.mjs';
 
 test('extracts metadata and enumerates files',async()=>{
   const zip=new JSZip();
@@ -14,9 +14,9 @@ test('extracts metadata and enumerates files',async()=>{
   assert.deepEqual(result.mixins,['test.json']);
 });
 
-test('rejects invalid, oversized, CRC-corrupted and path-traversing ZIPs',async()=>{
+test('rejects invalid, empty, CRC-corrupted and path-traversing ZIPs',async()=>{
   await assert.rejects(inspect(Buffer.from('invalid')),/Invalid ZIP/);
-  await assert.rejects(inspect(Buffer.alloc(limit+1)),/24 MiB/);
+  await assert.rejects(inspect(Buffer.alloc(0)),/empty/);
   const traversal=new JSZip();
   traversal.file('../outside','unsafe');
   await assert.rejects(inspect(await traversal.generateAsync({type:'nodebuffer'})),/Unsafe/);
