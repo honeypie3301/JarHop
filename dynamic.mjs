@@ -3,6 +3,8 @@ import {cp,mkdir,readFile,readdir,writeFile} from 'node:fs/promises';
 import JSZip from 'jszip';
 import {command,inspect} from './engine.mjs';
 import {verifyServer} from './server-verification.mjs';
+import {runBehaviorSuite} from './verification-suite.mjs';
+import {migrateGeneratedApis} from './generated-api-migrations.mjs';
 
 export const dynamicRoute='upload-neoforge-26.1.2';
 const target='26.1.2', neo='26.1.2.95';
@@ -121,7 +123,7 @@ tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
     if(!generated.length) throw Error('Decompiler produced no Java sources.');
     for(const entry of generated) {
       const file=path.join(entry.parentPath,entry.name);
-      await write(path.join(project,'src/main/java'),path.relative(decompiled,file).split(path.sep).join('/'),migrateJava(await readFile(file,'utf8')));
+      await write(path.join(project,'src/main/java'),path.relative(decompiled,file).split(path.sep).join('/'),migrateGeneratedApis(migrateJava(await readFile(file,'utf8'))));
     }
     const missing=[...new Set(needed)].filter(id=>!dependencies.some(dep=>dep.id===id));
     if(missing.length) throw Error('Missing target-version dependency JARs: '+missing.join(', ')+'.');
@@ -148,14 +150,32 @@ tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
     const runtimeMods=[{filename,bytes}];
     for(const [i,dep] of dependencies.entries()) runtimeMods.push({filename:dep.id+'.jar',bytes:await readFile(files[i+1])});
     await verifyServer({project,directory,id:input.id,neo,mods:runtimeMods,tools,signal,log:chunk=>update(null,chunk)});
-    const result={status:'candidate',target,inputs:inputs.map(({id,hash})=>({id,hash})),
-      outputs:[{filename,hash:built.hash,changedAssets}],rules:['ResourceLocation → Identifier','MobEffects constant names','MinecartTNT package','MobEffect server-level tick signature'],tests:{archive:'passed',compile:'passed',serverStartup:'passed',clientStartup:'pending',behaviorParity:'pending'}};
+    let clientStartup='pending', behaviorParity='pending', cases=[];
+    if(tools.clientVerification) {
+      update('Verifying packaged JAR in a clean NeoForge client');
+      await verifyServer({side:'client',project,directory,id:input.id,neo,mods:runtimeMods,tools,signal,log:chunk=>update(null,chunk)});
+      clientStartup='passed';
+    }
+    const suite=tools.verificationSuites?.[input.hash+':'+target];
+    if(suite && clientStartup==='passed') {
+      update('Running original and port behavior checks');
+      const packaged=path.join(directory,'behavior-candidate.jar');
+      await writeFile(packaged,bytes);
+      const expected={target,source:'1.21.1',neoForge:neo,original:{file:files[0],sha256:input.hash},
+        candidate:{file:packaged,sha256:built.hash},dependencies:dependencies.map((dep,i)=>({id:dep.id,file:files[i+1],sha256:dep.hash}))};
+      cases=await runBehaviorSuite({script:suite,directory,expected,signal,log:chunk=>update(null,chunk)});
+      behaviorParity='passed';
+    }
+    const status=behaviorParity==='passed'?'verified':'candidate';
+    const bundleFilename='jarhop-'+status+'.zip';
+    const result={status,bundleFilename,cases,target,inputs:inputs.map(({id,hash})=>({id,hash})),
+      outputs:[{filename,hash:built.hash,changedAssets}],rules:['ResourceLocation → Identifier','MobEffects constant names','MinecartTNT package','MobEffect server-level tick signature','Generated attachments, potions, brewing and networking APIs'],tests:{archive:'passed',compile:'passed',serverStartup:'passed',clientStartup,behaviorParity}};
     const report=JSON.stringify(result,null,2);
     const zip=new JSZip();
     zip.file(filename,bytes);zip.file('manifest.json',report);
     await write(directory,'exports/'+filename,bytes);
     await write(directory,'exports/manifest.json',report);
-    await write(directory,'exports/jarhop-candidate.zip',await zip.generateAsync({type:'nodebuffer'}));
+    await write(directory,'exports/'+bundleFilename,await zip.generateAsync({type:'nodebuffer'}));
     return result;
   } finally {
     await writeFile(path.join(directory,'migration.log'),log.join(''));

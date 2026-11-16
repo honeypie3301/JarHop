@@ -43,7 +43,7 @@ async function tools() {
   });
   return {
     java:path.join(jdk,'bin','java.exe'),template,
-    gradle:path.join(template,'gradlew.bat'), offline:true,
+    gradle:path.join(template,'gradlew.bat'), offline:true, clientVerification:true,
     env:{JAVA_HOME:jdk,GRADLE_USER_HOME:cache},
     art:await cached('net.neoforged','AutoRenamingTool','2.0.17','AutoRenamingTool-2.0.17-all.jar'),
     vineflower:await cached('org.vineflower','vineflower','1.11.2','vineflower-1.11.2.jar'),
@@ -143,7 +143,7 @@ const server=createServer(async(req,res)=>{
           job.result=result;job.status=result.status;
         }).catch(error=>{
           job.error=error.message; job.status=job.controller.signal.aborted?'cancelled':'failed';
-        }).finally(async()=>{active=null;job.project=existsSync(path.join(job.directory,'migration-project.zip'));job.serverVerificationLog=existsSync(path.join(job.directory,'server-verification.log'));await save(job);}).catch(console.error);
+        }).finally(async()=>{active=null;job.project=existsSync(path.join(job.directory,'migration-project.zip'));job.serverVerificationLog=existsSync(path.join(job.directory,'server-verification.log'));job.clientVerificationLog=existsSync(path.join(job.directory,'client-verification.log'));await save(job);}).catch(console.error);
         return json(res,202,summarize(job));
       } finally { if(!started) active=null; }
     }
@@ -154,19 +154,19 @@ const server=createServer(async(req,res)=>{
       if(req.method==='POST' && match[2]==='cancel') {
         job.controller?.abort(Error('Cancelled'));return json(res,200,summarize(job));
       }
-      if(req.method==='GET' && (job.project&&['migration-project.zip','migration.log'].includes(match[2]) || job.serverVerificationLog&&match[2]==='server-verification.log')) {
+      if(req.method==='GET' && (job.project&&['migration-project.zip','migration.log'].includes(match[2]) || job.serverVerificationLog&&match[2]==='server-verification.log' || job.clientVerificationLog&&match[2]==='client-verification.log')) {
         res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="'+match[2]+'"'});
         return streamFile(path.join(job.directory,match[2])).pipe(res);
       }
       if(req.method==='GET' && !match[2]) return json(res,200,summarize(job));
-      if(req.method==='GET' && job.status==='candidate' && ['manifest.json','jarhop-candidate.zip',...job.result.outputs.map(item=>item.filename)].includes(match[2])) {
+      if(req.method==='GET' && ['candidate','verified'].includes(job.status) && ['manifest.json',job.result.bundleFilename||'jarhop-candidate.zip',...job.result.outputs.map(item=>item.filename)].includes(match[2])) {
         res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="'+match[2]+'"'});
         return streamFile(path.join(job.directory,'exports',match[2])).pipe(res);
       }
     }
     const file=path.join(root,'dist',url.pathname==='/'?'index.html':url.pathname.slice(1));
-    if(req.method==='GET' && file.startsWith(path.join(root,'dist')+path.sep) && existsSync(file) && /\.(html|js|css|svg)$/.test(file)) {
-      res.writeHead(200,{'Content-Type':{'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml'}[path.extname(file)]});
+    if(req.method==='GET' && file.startsWith(path.join(root,'dist')+path.sep) && existsSync(file) && /\.(html|js|css|svg|ico)$/.test(file)) {
+      res.writeHead(200,{'Content-Type':{'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.ico':'image/x-icon'}[path.extname(file)],'Cache-Control':'no-cache'});
       return streamFile(file).pipe(res);
     }
     json(res,404,{error:'Not found.'});

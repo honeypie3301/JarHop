@@ -54,12 +54,12 @@ function App() {
   const missing=Object.keys(profiles).filter(id=>!matched.has(id));
   const custom=localProfiles.find(profile=>profile.target===target &&
     files.length===profile.inputs.length && profile.inputs.every(input=>files.some(file=>file.hash===input.sha256)));
-  const targets=[...new Set(['26.1.2','26.2',...localProfiles.map(profile=>profile.target)])];
+  const targets=[...new Set(['26.1.2','26.2','26.3',...localProfiles.map(profile=>profile.target)])];
   const checking=files.some(file=>file.checking);
   const blocked=busy || job?.status==='running' || (cloud && cloud.status!=='completed');
   const ready=!checking && (dynamic ? target==='26.1.2' && files.length>0 && files[0].role==='source' && files.every(file=>!file.issue&&(file.mod||file.inspection?.loader==='NeoForge')) : (Boolean(custom) || (target==='26.1.2' && !missing.length && files.length===3)));
   const hint=blocked?'A build is already running.':checking?'Checking JARs…':
-    dynamic?(target!=='26.1.2'?'Upload builds currently target 26.1.2.':ready?'Ready to generate a project from the first JAR.':'Choose the NeoForge 1.21.1 source mod and add its dependencies if needed.'):
+    dynamic?(target!=='26.1.2'?'Automatic upload migration is available for 26.1.2. Select Prepared project to use a local profile for '+target+'.':ready?'Ready to generate a project from the first JAR.':'Choose the NeoForge 1.21.1 source mod and add its dependencies if needed.'):
     custom?'Ready to build '+custom.title+'.':
     target!=='26.1.2'?'NeoForge '+target+' needs a migration profile before JarHop can build for it.':
     files.some(file=>!file.mod)?'This selection has no build profile for NeoForge '+target+'.':
@@ -151,7 +151,7 @@ function App() {
                     <fieldset className="targets">
             <legend className="mono">TARGET · NEOFORGE</legend>
             {targets.map(version=><button type="button" key={version}
-              aria-pressed={target===version} onClick={()=>setTarget(version)}>{version}{version!=='26.1.2'&&!localProfiles.some(profile=>profile.target===version)?' · No profile':''}</button>)}
+              aria-pressed={target===version} onClick={()=>setTarget(version)}>{version}</button>)}
           </fieldset>
           <button className="primary" aria-describedby="build-status" disabled={!ready||Boolean(blocked)}>Build port <span aria-hidden="true">↗</span></button>
         </div>
@@ -171,11 +171,12 @@ function App() {
         {!runnerOffline&&job.status==='running'&&job.lastOutputAt&&clock-job.lastOutputAt>=15000&&
           <p className="hint" role="status">Runner connected. No build output for {Math.floor((clock-job.lastOutputAt)/1000)} seconds.</p>}
         {job.status==='running'&&<button className="secondary" disabled={runnerOffline} onClick={()=>request('/api/local/'+job.id+'/cancel',{method:'POST'}).catch(e=>setError(e.message))}>Cancel build</button>}
-        {job.result&&<><p>{job.result.tests?.serverStartup==='passed'?'Packaged JAR passed server startup. Client and gameplay checks are pending.':'Candidate build. Runtime checks are pending.'} {job.result.outputs.reduce((n,o)=>n+(o.changedAssets?.length||0),0)} resource paths differ from the inputs. See the manifest for details.</p><ul className="downloads">
-          {['jarhop-candidate.zip',...job.result.outputs.map(o=>o.filename),'manifest.json'].map(name=><li key={name}><a href={'/api/local/'+job.id+'/'+name}>{name}<span aria-hidden="true">↓</span></a></li>)}
+        {job.result&&<><p>{job.status==='verified'?'Client, server and configured behavior checks passed.':job.result.tests?.clientStartup==='passed'?'Client and server startup passed. Behavior parity is pending.':job.result.tests?.serverStartup==='passed'?'Server startup passed. Client and behavior checks are pending.':'Candidate build. Runtime checks are pending.'} {job.result.outputs.reduce((n,o)=>n+(o.changedAssets?.length||0),0)} resource paths differ from the inputs. See the manifest for details.</p><ul className="downloads">
+          {[job.result.bundleFilename||'jarhop-candidate.zip',...job.result.outputs.map(o=>o.filename),'manifest.json'].map(name=><li key={name}><a href={'/api/local/'+job.id+'/'+name}>{name}<span aria-hidden="true">↓</span></a></li>)}
         </ul></>}
         {job.project&&<p><a href={'/api/local/'+job.id+'/migration-project.zip'}>Download editable project</a> · <a href={'/api/local/'+job.id+'/migration.log'}>Full migration log</a></p>}
         {job.serverVerificationLog&&<p><a href={'/api/local/'+job.id+'/server-verification.log'}>Server verification log</a></p>}
+        {job.clientVerificationLog&&<p><a href={'/api/local/'+job.id+'/client-verification.log'}>Client verification log</a></p>}
         <details key={job.id} open={job.status==='running'||undefined}><summary>Build log</summary><pre>{job.logs}</pre></details>
       </section>}
     </main>
