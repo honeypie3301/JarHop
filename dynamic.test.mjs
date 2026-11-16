@@ -1,3 +1,4 @@
+import {dependencyCompatibility} from './route.mjs';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {includesMinecraft,migrateJava} from './dynamic.mjs';
@@ -24,4 +25,9 @@ test('adapts legacy vanilla mob-effect tick overrides and forwards the server le
   assert.match(migrated,/applyEffectTick\(net\.minecraft\.server\.level\.ServerLevel jarhopServerLevel, LivingEntity entity, int amplification\)/);
   assert.match(migrated,/return super\.applyEffectTick\(jarhopServerLevel, entity, amplification\);/);
   assert.equal(migrateJava(migrated),migrated);
+});
+
+test('an explicit 1.21.1 filename is flagged even if its metadata range is open-ended',()=>{
+  assert.match(dependencyCompatibility('[1.21.1,)', 'framework-neoforge-1.21.1-0.13.11.jar','26.1.2'),/identifies a Minecraft 1.21.1 build/);
+  assert.equal(dependencyCompatibility('[26.1,26.2)', 'framework-neoforge-26.1.2-0.13.23.jar','26.1.2'),null);
 });

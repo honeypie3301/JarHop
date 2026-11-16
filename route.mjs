@@ -33,3 +33,10 @@ export function supportsPreparedSelection(ids,local) {
   if(selected.size!==ids.length || ids.some(id=>!Object.hasOwn(profiles,id))) return false;
   return selected.has('viltrumitecore') && selected.has('viltrumiteflight') && (local || selected.has('lasereyes'));
 }
+
+export function dependencyCompatibility(range,filename,target) {
+  const declaredBuild=filename?.match(/(?:^|-)neoforge-(1\.\d+\.\d+|26\.\d+\.\d+)(?=-)/i)?.[1];
+  if(declaredBuild?.startsWith('1.')&&!target.startsWith('1.')) return 'Filename identifies a Minecraft '+declaredBuild+' build.';
+  if(!includesMinecraft(range,target)) return range?'Declares Minecraft '+range+'.':'No Minecraft version is declared.';
+  return null;
+}

@@ -24,3 +24,5 @@ Use [refresh.bat](refresh.bat) to merge a new upstream source snapshot into a co
 ### Viltrumite Core and Flight
 
 For the known original 1.21.1 releases, use **Prepared project** and select Core and Flight. Laser Eyes is optional for local prepared builds. In **From uploaded JAR**, the dependency picker takes libraries already built for 26.1.2. The original 1.21.1 Flight JAR belongs in the prepared workflow.
+
+Start JarHop from a terminal with npm start. Restart the local runner with npm run restart. Missing upload tools are installed when the next upload build needs them. The refresh workflow is still available through refresh.bat and its JSON configuration. Online jobs appear as a link once VITE_JARHOP_ONLINE_URL is configured.

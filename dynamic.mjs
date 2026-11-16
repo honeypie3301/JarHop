@@ -64,14 +64,14 @@ export async function runDynamic({files,directory,tools,signal,update}) {
   const incompatible=dependencies.filter(dep=>!includesMinecraft(dep.minecraft,target));
   if(incompatible.length) throw Error('Dependency JARs do not declare Minecraft '+target+' compatibility: '+incompatible.map(dep=>dep.id+' ('+(dep.minecraft||'no Minecraft range')+')').join(', ')+'.');
   if(inputs.some(mod=>!/^[a-z][a-z0-9_]{1,63}$/.test(mod.id||'')) || new Set(inputs.map(mod=>mod.id)).size!==inputs.length) throw Error('Expected distinct NeoForge mod IDs.');
-  for(const key of ['java','art','mappings','minecraft','vineflower','template']) if(!tools[key]) throw Error('Missing tool: '+key);
+  for(const key of ['java','art','mappings','minecraft','vineflower']) if(!tools[key]) throw Error('Missing tool: '+key+'. Run setup-toolchain.bat or configure tools.local.json.');
   const project=path.join(directory,'project');
   const log=[];
   const run=(args,cwd)=>command(tools.java,args,{cwd,signal,env:{...process.env,...tools.env},log:chunk=>{log.push(chunk);update(null,chunk);}});
   await mkdir(project,{recursive:true});
   try {
     update('Generating Gradle project');
-    await cp(path.join(tools.template,'gradle'),path.join(project,'gradle'),{recursive:true});
+    await cp(tools.wrapperDir||path.join(tools.template,'gradle'),path.join(project,'gradle'),{recursive:true});
     await writeFile(path.join(project,'settings.gradle'),"pluginManagement { repositories { gradlePluginPortal(); maven { url = 'https://maven.neoforged.net/releases' } } }\nrootProject.name = '"+input.id+"'\n");
     await writeFile(path.join(project,'build.gradle'),`plugins { id 'java'; id 'net.neoforged.moddev' version '2.0.141' }
 java.toolchain.languageVersion = JavaLanguageVersion.of(25)

@@ -5,3 +5,4 @@ dist/
 *.jar
 tools.local.json
 port-profiles.local.json
+!/gradle/wrapper/gradle-wrapper.jar

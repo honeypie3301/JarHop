@@ -77,9 +77,18 @@ export function validate(inputs,target,local=false) {
 export function command(executable,args,{cwd,env=process.env,signal,log=()=>{}}={}) {
   return new Promise((resolve,reject)=>{
     signal?.throwIfAborted();
-    const child=spawn(executable,args,{cwd,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
-    const abort=()=>child.kill();
+    const child=spawn(executable,args,{cwd,env,windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
+    const abort=()=>{
+      if(!child.pid) return;
+      if(process.platform==='win32') {
+        const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});
+        killer.on('error',()=>child.kill());
+      } else {
+        try { process.kill(-child.pid,'SIGTERM'); } catch { child.kill(); }
+      }
+    };
     signal?.addEventListener('abort',abort,{once:true});
+    if(signal?.aborted) abort();
     child.stdout.on('data',chunk=>log(chunk.toString()));
     child.stderr.on('data',chunk=>log(chunk.toString()));
     child.on('error',reject);

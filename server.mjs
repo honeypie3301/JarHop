@@ -4,10 +4,10 @@ import {mkdir,readFile,readdir,rename,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {includesMinecraft} from './route.mjs';
+import {dependencyCompatibility} from './route.mjs';
 import {dynamicRoute,runDynamic} from './dynamic.mjs';
 import {readProfiles,validateProfileInputs} from './local-profiles.mjs';
-import {inspect,inspectArchive,route,runPort,streamFile,validate} from './engine.mjs';
+import {inspect,inspectArchive,route,runPort,streamFile,validate,command} from './engine.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const state=path.join(root,'.jarhop');
@@ -37,19 +37,26 @@ async function cached(group,pkg,version,name) {
 }
 async function tools() {
   const jdk=process.env.JAVA_HOME||path.join(process.env.USERPROFILE||'','.jdks','openjdk-25.0.1');
-  const template=path.join(codex,'Viltrumite-26.1.2');
-  const config=await readFile(path.join(root,'tools.local.json'),'utf8').then(JSON.parse).catch(error=>{
+  const bundledPort=path.join(state,'ports','viltrumite-26.1.2');
+  const template=existsSync(path.join(bundledPort,'settings.gradle'))?bundledPort:path.join(codex,'Viltrumite-26.1.2');
+  let config=await readFile(path.join(root,'tools.local.json'),'utf8').then(JSON.parse).catch(error=>{
     if(error.code==='ENOENT') return {};
     throw error;
   });
+  const bundled=path.join(root,'gradle');
+  const local=path.join(state,'toolchain');
+  const names=['AutoRenamingTool-2.0.17-all.jar','vineflower-1.11.2.jar','minecraft_1.21.1_client_mappings.txt','minecraft_1.21.1_client.jar'];
+  const paths=names.map(name=>path.join(local,name));
+  const independent=paths.every(existsSync);
+  const java=path.join(jdk,'bin','java.exe');
   return {
-    java:path.join(jdk,'bin','java.exe'),template,
-    gradle:path.join(template,'gradlew.bat'), offline:true, clientVerification:true,
-    env:{JAVA_HOME:jdk,GRADLE_USER_HOME:cache},
-    art:await cached('net.neoforged','AutoRenamingTool','2.0.17','AutoRenamingTool-2.0.17-all.jar'),
-    vineflower:await cached('org.vineflower','vineflower','1.11.2','vineflower-1.11.2.jar'),
-    mappings:path.join(artifacts,'minecraft_1.21.1_client_mappings.txt'),
-    minecraft:path.join(artifacts,'minecraft_1.21.1_client.jar'), ...config
+    java:existsSync(java)?java:'java.exe',template,wrapperDir:bundled,
+    gradle:path.join(template,'gradlew.bat'), offline:!independent, clientVerification:true,
+    env:{...(existsSync(java)?{JAVA_HOME:jdk}:{}),GRADLE_USER_HOME:independent?path.join(state,'gradle-home'):cache},
+    art:independent?paths[0]:await cached('net.neoforged','AutoRenamingTool','2.0.17','AutoRenamingTool-2.0.17-all.jar'),
+    vineflower:independent?paths[1]:await cached('org.vineflower','vineflower','1.11.2','vineflower-1.11.2.jar'),
+    mappings:independent?paths[2]:path.join(artifacts,'minecraft_1.21.1_client_mappings.txt'),
+    minecraft:independent?paths[3]:path.join(artifacts,'minecraft_1.21.1_client.jar'), ...config
   };
 }
 const json=(res,status,value)=>res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'}).end(JSON.stringify(value));
@@ -116,8 +123,8 @@ const server=createServer(async(req,res)=>{
         else if(!dynamic) validate(details,selected,true);
         if(dynamic && (new Set(details.map(item=>item.id)).size!==details.length || details.some(item=>!/^[a-z][a-z0-9_]{1,63}$/.test(item.id||'')))) throw Error('Expected distinct NeoForge mod IDs.');
         if(dynamic) {
-          const incompatible=details.slice(1).filter(item=>!includesMinecraft(item.minecraft,'26.1.2'));
-          if(incompatible.length) throw Error('Dependencies must already support Minecraft 26.1.2: '+incompatible.map(item=>item.id+' ('+(item.minecraft||'no declared version')+')').join(', ')+'. For the original Viltrumite JARs, use Prepared project.');
+          const incompatible=details.slice(1).map((item,index)=>[item.id,dependencyCompatibility(item.minecraft,uploads[index+1].name,'26.1.2')]).filter(([,reason])=>reason);
+          if(incompatible.length) throw Error('Dependencies must already support Minecraft 26.1.2: '+incompatible.map(([id,reason])=>id+' ('+reason+')').join(', ')+'. For the original Viltrumite JARs, use Prepared project.');
         }
         const id=randomUUID(),directory=path.join(state,id);
         await mkdir(directory);
@@ -128,13 +135,22 @@ const server=createServer(async(req,res)=>{
         }));
         const job={id,directory,status:'running',stage:'Queued',logs:'',startedAt:Date.now(),lastOutputAt:null,controller:new AbortController(),
           inputs:details.map(({id,version,minecraft,dependencies})=>({id,version,minecraft,dependencies}))};
-        const config=await tools();
+        let config=await tools();
         if(profile) config.template=profile.template;
         jobs.set(id,job);
         await save(job);
         started=true;
         let lastSavedAt=Date.now();
-        (dynamic?runDynamic:runPort)({files,target:route,directory,tools:config,profile,local:true,signal:job.controller.signal,update(stage,line){
+        (async()=>{
+          if(dynamic && ['art','vineflower','mappings','minecraft'].some(key=>!config[key]||!existsSync(config[key]))) {
+            job.stage='Setting up build tools';
+            await save(job);
+            await command(process.execPath,[path.join(root,'setup-toolchain.mjs')],{
+              cwd:root,signal:job.controller.signal,log:chunk=>{job.logs=(job.logs+chunk).slice(-24000);job.lastOutputAt=Date.now();}
+            });
+            config=await tools();
+          }
+          return (dynamic?runDynamic:runPort)({files,target:route,directory,tools:config,profile,local:true,signal:job.controller.signal,update(stage,line){
           if(stage) job.stage=stage;
           if(line) {
             job.logs=(job.logs+line).slice(-24000);
@@ -144,7 +160,8 @@ const server=createServer(async(req,res)=>{
             lastSavedAt=Date.now();
             save(job).catch(console.error);
           }
-        }}).then(result=>{
+        }});
+        })().then(result=>{
           job.result=result;job.status=result.status;
         }).catch(error=>{
           job.error=error.message; job.status=job.controller.signal.aborted?'cancelled':'failed';
@@ -157,7 +174,7 @@ const server=createServer(async(req,res)=>{
       const job=jobs.get(match[1]);
       if(!job) return json(res,404,{error:'Unknown job.'});
       if(req.method==='POST' && match[2]==='cancel') {
-        job.controller?.abort(Error('Cancelled'));return json(res,200,summarize(job));
+        job.stage='Stopping build processes';job.cancelling=true;job.controller?.abort(Error('Cancelled'));return json(res,200,summarize(job));
       }
       if(req.method==='GET' && (job.project&&['migration-project.zip','migration.log'].includes(match[2]) || job.serverVerificationLog&&match[2]==='server-verification.log' || job.clientVerificationLog&&match[2]==='client-verification.log')) {
         res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="'+match[2]+'"'});

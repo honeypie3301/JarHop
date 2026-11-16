@@ -2,7 +2,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
 
-import {limit, profiles, route, includesMinecraft, supportsPreparedSelection} from './route.mjs';
+import {limit, profiles, route, dependencyCompatibility, supportsPreparedSelection} from './route.mjs';
 
 const names={viltrumitecore:'Viltrumite Core',viltrumiteflight:'Viltrumite Flight',lasereyes:'Laser Eyes'};
 const local=location.hostname==='127.0.0.1' && location.port==='4789';
@@ -15,7 +15,7 @@ async function request(url,options) {
   return body;
 }
 function App() {
-  const [files,setFiles]=useState([]),[job,setJob]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+  const [modeFiles,setModeFiles]=useState({upload:[],prepared:[]}),[job,setJob]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [runnerOffline,setRunnerOffline]=useState(false), [clock,setClock]=useState(Date.now());
   const [localProfiles,setLocalProfiles]=useState([]);
   const [account,setAccount]=useState(null),[cloud,setCloud]=useState(null);
@@ -49,11 +49,13 @@ function App() {
   const [dragging,setDragging]=useState(false);
   const [mode,setMode]=useState(local?'upload':'prepared');
   const dynamic=mode==='upload';
+  const files=modeFiles[mode];
+  const setFiles=update=>setModeFiles(current=>({...current,[mode]:update(current[mode])}));
   const [target,setTarget]=useState('26.1.2');
   const matched=new Set(files.map(file=>file.mod).filter(Boolean));
   const missing=(local?['viltrumitecore','viltrumiteflight']:Object.keys(profiles)).filter(id=>!matched.has(id));
   const prepared=local&&target==='26.1.2'&&supportsPreparedSelection(files.map(file=>file.mod),true);
-  const incompatible=file=>dynamic&&file.role==='dependency'&&!file.checking&&!file.issue&&!includesMinecraft(file.minecraft,'26.1.2');
+  const incompatible=file=>dynamic&&file.role==='dependency'&&!file.checking&&!file.issue&&dependencyCompatibility(file.minecraft,file.file.name,'26.1.2');
   const custom=localProfiles.find(profile=>profile.target===target &&
     files.length===profile.inputs.length && profile.inputs.every(input=>files.some(file=>file.hash===input.sha256)));
   const targets=[...new Set(['26.1.2','26.2','26.3',...localProfiles.map(profile=>profile.target)])];
@@ -127,10 +129,17 @@ function App() {
         <p>Generate a NeoForge project directly from your mod JAR.</p>
       </div>
       {canBuild?<form className="panel" onSubmit={submit}>
-                {local&&<fieldset className="targets"><legend className="mono">BUILD MODE</legend>
-          <button type="button" aria-pressed={dynamic} onClick={()=>setMode('upload')}>From uploaded JAR</button>
-          <button type="button" aria-pressed={!dynamic} onClick={()=>setMode('prepared')}>Prepared project</button>
-        </fieldset>}
+                {local&&<div className="targets mode-tabs" role="tablist" aria-label="Build mode">
+          {[['upload','From uploaded JAR'],['prepared','Prepared project']].map(([value,label])=><button key={value} type="button"
+            id={'mode-'+value} role="tab" aria-selected={mode===value} aria-controls="mode-panel"
+            tabIndex={mode===value?0:-1} onClick={()=>setMode(value)} onKeyDown={event=>{
+              if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+              event.preventDefault();
+              const next=event.key==='Home'?'upload':event.key==='End'?'prepared':value==='upload'?'prepared':'upload';
+              setMode(next);document.getElementById('mode-'+next)?.focus();
+            }}>{label}</button>)}
+        </div>}
+        <div id="mode-panel" role={local?'tabpanel':undefined} aria-labelledby={local?'mode-'+mode:undefined}>
         <div className="panel-head"><h2>Mod JARs</h2><span className="mono">{files.length} selected</span></div>
         <input hidden ref={picker} type="file" accept=".jar" multiple={!dynamic} onChange={e=>{addFiles(e.target.files);e.target.value='';}}/>
         <button className={'drop'+(dragging?' dragging':'')} type="button" onClick={()=>picker.current.click()}
@@ -146,7 +155,7 @@ function App() {
           <p className="hint">Choose NeoForge JARs compatible with Minecraft 26.1.2.</p>
         </div>}
         {files.length>0&&<ul className="files">{files.map(item=><li key={item.key}>
-          <div><strong>{item.file.name}</strong>{dynamic&&<small>{item.role==='dependency'?'Dependency':'Source mod'}</small>}<small className={item.issue||incompatible(item)?'invalid':''}>{item.issue||(incompatible(item)?'Requires Minecraft '+(item.minecraft||'unknown')+'. Upload the 26.1.2 dependency JAR.':null)||(item.checking?'Checking…':item.mod?names[item.mod]+' '+profiles[item.mod][0]:item.inspection?item.inspection.loader+' · '+item.inspection.classes+' classes'+(localProfiles.some(profile=>profile.inputs.some(input=>input.sha256===item.hash))?' · Local profile available':''):'Build profile unavailable')}</small></div>
+          <div><strong>{item.file.name}</strong>{dynamic&&<small>{item.role==='dependency'?'Dependency':'Source mod'}</small>}<small className={item.issue||incompatible(item)?'invalid':''}>{item.issue||(incompatible(item)?incompatible(item)+' Choose a 26.1.2 dependency JAR.':null)||(item.checking?'Checking…':item.mod?names[item.mod]+' '+profiles[item.mod][0]:item.inspection?item.inspection.loader+' · '+item.inspection.classes+' classes'+(localProfiles.some(profile=>profile.inputs.some(input=>input.sha256===item.hash))?' · Local profile available':''):'Build profile unavailable')}</small></div>
           <button className="remove" type="button" aria-label={'Remove '+item.file.name} onClick={()=>setFiles(current=>current.filter(file=>file.key!==item.key))}>×</button>
         </li>)}</ul>}
         <div className="build-row">
@@ -158,11 +167,12 @@ function App() {
           <button className="primary" aria-describedby="build-status" disabled={!ready||Boolean(blocked)}>Build port <span aria-hidden="true">↗</span></button>
         </div>
         <p className="hint" id="build-status" role="status">{hint}</p>
-        {dynamic&&prepared&&<button className="secondary" type="button" onClick={()=>setMode('prepared')}>Use prepared Viltrumite port</button>}
+        {dynamic&&prepared&&<button className="secondary" type="button" onClick={()=>{setModeFiles(current=>({...current,prepared:current.upload}));setMode('prepared');}}>Use prepared Viltrumite port</button>}
+        </div>
       </form>:<section className="panel">
         <h2>Open JarHop</h2>
         <p>Run <code>start.bat</code>, then open <a href="http://127.0.0.1:4789">the local app</a>.</p>
-        {remote?<a href="/api/online?action=login">Sign in with GitHub</a>:<a href={(online||'/')+'?runner=online'}>Online jobs</a>}
+        {remote?<a href="/api/online?action=login">Sign in with GitHub</a>:online?<a href={online+'?runner=online'}>Online jobs</a>:<p className="hint">Online jobs are not configured for this installation.</p>}
       </section>}
       {cloud&&<p className="panel">GitHub Actions · {cloud.conclusion||cloud.status} {cloud.url&&<a href={cloud.url}>Run log and downloads ↗</a>}</p>}
       {error&&<p className="panel invalid" role="alert">{error}</p>}
@@ -173,7 +183,7 @@ function App() {
         {runnerOffline&&job.status==='running'&&<p className="invalid" role="status">Connection to the local runner was lost. Start JarHop again to recover the recorded job status.</p>}
         {!runnerOffline&&job.status==='running'&&job.lastOutputAt&&clock-job.lastOutputAt>=15000&&
           <p className="hint" role="status">Runner connected. No build output for {Math.floor((clock-job.lastOutputAt)/1000)} seconds.</p>}
-        {job.status==='running'&&<button className="secondary" disabled={runnerOffline} onClick={()=>request('/api/local/'+job.id+'/cancel',{method:'POST'}).catch(e=>setError(e.message))}>Cancel build</button>}
+        {job.status==='running'&&<button className="secondary" disabled={runnerOffline||job.cancelling} onClick={()=>{setJob(current=>({...current,cancelling:true}));request('/api/local/'+job.id+'/cancel',{method:'POST'}).then(setJob).catch(e=>{setJob(current=>({...current,cancelling:false}));setError(e.message);});}}>{job.cancelling?'Stopping…':'Cancel build'}</button>}
         {job.result&&<><p>{job.status==='verified'?'Client, server and configured behavior checks passed.':job.result.tests?.clientStartup==='passed'?'Client and server startup passed. Behavior parity is pending.':job.result.tests?.serverStartup==='passed'?'Server startup passed. Client and behavior checks are pending.':'Candidate build. Runtime checks are pending.'} {job.result.outputs.reduce((n,o)=>n+(o.changedAssets?.length||0),0)} resource paths differ from the inputs. See the manifest for details.</p><ul className="downloads">
           {[job.result.bundleFilename||'jarhop-candidate.zip',...job.result.outputs.map(o=>o.filename),'manifest.json'].map(name=><li key={name}><a href={'/api/local/'+job.id+'/'+name}>{name}<span aria-hidden="true">↓</span></a></li>)}
         </ul></>}
