@@ -165,7 +165,7 @@ const server=createServer(async(req,res)=>{
           job.result=result;job.status=result.status;
         }).catch(error=>{
           job.error=error.message; job.status=job.controller.signal.aborted?'cancelled':'failed';
-        }).finally(async()=>{active=null;job.project=existsSync(path.join(job.directory,'migration-project.zip'));job.serverVerificationLog=existsSync(path.join(job.directory,'server-verification.log'));job.clientVerificationLog=existsSync(path.join(job.directory,'client-verification.log'));await save(job);}).catch(console.error);
+        }).finally(async()=>{active=null;job.project=existsSync(path.join(job.directory,'migration-project.zip'));job.serverVerificationLog=existsSync(path.join(job.directory,'server-verification.log'));job.clientVerificationLog=existsSync(path.join(job.directory,'client-verification.log'));job.compilerDiagnostics=existsSync(path.join(job.directory,'compiler-errors.json'));await save(job);}).catch(console.error);
         return json(res,202,summarize(job));
       } finally { if(!started) active=null; }
     }
@@ -176,7 +176,7 @@ const server=createServer(async(req,res)=>{
       if(req.method==='POST' && match[2]==='cancel') {
         job.stage='Stopping build processes';job.cancelling=true;job.controller?.abort(Error('Cancelled'));return json(res,200,summarize(job));
       }
-      if(req.method==='GET' && (job.project&&['migration-project.zip','migration.log'].includes(match[2]) || job.serverVerificationLog&&match[2]==='server-verification.log' || job.clientVerificationLog&&match[2]==='client-verification.log')) {
+      if(req.method==='GET' && (job.project&&['migration-project.zip','migration.log'].includes(match[2]) || job.serverVerificationLog&&match[2]==='server-verification.log' || job.clientVerificationLog&&match[2]==='client-verification.log' || job.compilerDiagnostics&&match[2]==='compiler-errors.json')) {
         res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="'+match[2]+'"'});
         return streamFile(path.join(job.directory,match[2])).pipe(res);
       }

@@ -190,6 +190,7 @@ function App() {
         {job.project&&<p><a href={'/api/local/'+job.id+'/migration-project.zip'}>Download editable project</a> · <a href={'/api/local/'+job.id+'/migration.log'}>Full migration log</a></p>}
         {job.serverVerificationLog&&<p><a href={'/api/local/'+job.id+'/server-verification.log'}>Server verification log</a></p>}
         {job.clientVerificationLog&&<p><a href={'/api/local/'+job.id+'/client-verification.log'}>Client verification log</a></p>}
+        {job.compilerDiagnostics&&<p><a href={'/api/local/'+job.id+'/compiler-errors.json'}>All compiler diagnostics</a></p>}
         <details key={job.id} open={job.status==='running'||undefined}><summary>Build log</summary><pre>{job.logs}</pre></details>
       </section>}
     </main>

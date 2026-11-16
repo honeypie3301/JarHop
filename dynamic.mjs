@@ -2,6 +2,7 @@ import path from 'node:path';
 import {cp,mkdir,readFile,readdir,writeFile} from 'node:fs/promises';
 import JSZip from 'jszip';
 import {command,inspect} from './engine.mjs';
+import {dependencyRules,migrateDependencyTypes} from './dependency-migrations.mjs';
 import {verifyServer} from './server-verification.mjs';
 import {runBehaviorSuite} from './verification-suite.mjs';
 import {migrateGeneratedApis} from './generated-api-migrations.mjs';
@@ -60,6 +61,7 @@ async function archiveProject(project,directory) {
 export async function runDynamic({files,directory,tools,signal,update}) {
   const inputs=await Promise.all(files.map(async file=>inspect(await readFile(file))));
   const [input,...dependencies]=inputs;
+  const dependencyTypes=dependencyRules(dependencies);
   if(!input || lower(input.minecraft)!=='1.21.1') throw Error('Select the NeoForge 1.21.1 source mod first.');
   const incompatible=dependencies.filter(dep=>!includesMinecraft(dep.minecraft,target));
   if(incompatible.length) throw Error('Dependency JARs do not declare Minecraft '+target+' compatibility: '+incompatible.map(dep=>dep.id+' ('+(dep.minecraft||'no Minecraft range')+')').join(', ')+'.');
@@ -77,7 +79,7 @@ export async function runDynamic({files,directory,tools,signal,update}) {
 java.toolchain.languageVersion = JavaLanguageVersion.of(25)
 neoForge { version = '${neo}'; mods { register('${input.id}') { sourceSet sourceSets.main } } }
 dependencies { implementation fileTree('libs') { include '*.jar' } }
-tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8'; options.compilerArgs += ['-Xmaxerrs', '2000', '-Xmaxwarns', '20'] }
 `);
     const metadata=await input.zip.file(toml).async('string');
     const needed=[];
@@ -105,7 +107,7 @@ tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
     if(!generated.length) throw Error('Decompiler produced no Java sources.');
     for(const entry of generated) {
       const file=path.join(entry.parentPath,entry.name);
-      await write(path.join(project,'src/main/java'),path.relative(decompiled,file).split(path.sep).join('/'),migrateGeneratedApis(migrateJava(await readFile(file,'utf8'))));
+      await write(path.join(project,'src/main/java'),path.relative(decompiled,file).split(path.sep).join('/'),migrateDependencyTypes(migrateGeneratedApis(migrateJava(await readFile(file,'utf8'))),dependencyTypes));
     }
     const missing=[...new Set(needed)].filter(id=>!dependencies.some(dep=>dep.id===id));
     if(missing.length) throw Error('Missing target-version dependency JARs: '+missing.join(', ')+'.');
@@ -116,7 +118,7 @@ tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
       const first=log.join('').split(/\r?\n/).find(line=>/\.java:\d+: error:/.test(line));
       if(!first) throw error;
       const diagnostic=first.trim().replace(/^.*[\\/]([^\\/]+\.java:\d+: error:)/,'$1');
-      throw Error('Generated sources failed to compile against NeoForge '+target+'. '+diagnostic+' See the full migration log.',{cause:error});
+      throw Error('API migration is incomplete ('+compilerErrors.length+' compiler diagnostics). Generated sources failed to compile against NeoForge '+target+'. '+diagnostic+' See the full migration log.',{cause:error});
     }
     const filename=input.id+'-neoforge-'+target+'.jar';
     const bytes=await readFile(path.join(project,'build/libs',input.id+'.jar'));
@@ -150,7 +152,7 @@ tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
     }
     const status=behaviorParity==='passed'?'verified':'candidate';
     const bundleFilename='jarhop-'+status+'.zip';
-    const result={status,bundleFilename,cases,target,inputs:inputs.map(({id,hash})=>({id,hash})),
+    const result={status,bundleFilename,cases,dependencyTypeMoves:dependencyTypes.rules,target,inputs:inputs.map(({id,hash})=>({id,hash})),
       outputs:[{filename,hash:built.hash,changedAssets}],rules:['ResourceLocation → Identifier','MobEffects constant names','MinecartTNT package','MobEffect server-level tick signature','Generated attachments, potions, brewing and networking APIs'],tests:{archive:'passed',compile:'passed',serverStartup:'passed',clientStartup,behaviorParity}};
     const report=JSON.stringify(result,null,2);
     const zip=new JSZip();
